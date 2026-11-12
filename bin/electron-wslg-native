@@ -1,0 +1,21 @@
+#!/bin/sh
+# Native Wayland + Mesa D3D12, with no project diagnostic/injection settings.
+set -eu
+if [ "$#" -lt 1 ]; then
+    printf '%s\n' 'Usage: electron-wslg-native /absolute/path/to/electron-app [arguments...]' >&2
+    exit 2
+fi
+if [ -z "${WAYLAND_DISPLAY:-}" ] && [ -z "${WAYLAND_SOCKET:-}" ]; then
+    printf '%s\n' 'No Wayland display is configured in this session.' >&2
+    exit 1
+fi
+app=$1
+shift
+# Preserve user proxy, profile and application settings. Clear only tracing and
+# known project injection/rendering diagnostic settings for this process tree.
+unset WAYLAND_DEBUG ELECTRON_ENABLE_LOGGING ELECTRON_LOG_FILE
+unset LIBGL_ALWAYS_SOFTWARE MESA_LOADER_DRIVER_OVERRIDE
+unset NODE_OPTIONS LD_PRELOAD ELECTRON_RUN_AS_NODE
+unset WSLG_FIX WSLG_FIX_MODE WSLG_FIX_LOG
+export GALLIUM_DRIVER=d3d12
+exec "$app" --ozone-platform=wayland "$@"

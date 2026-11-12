@@ -32,7 +32,7 @@ Successful `git apply --check` only establishes textual applicability. Matching 
 
 ## Preserve test behavior
 
-Use the original application without injection or keepalive changes. Move the pointer onto the application's own minimize button, hover about 800 ms, click, then restore by physically clicking the taskbar. Verify content scrolling/input without dragging, resizing or maximizing as a recovery aid.
+Use the original application without injection or keepalive changes. Move the pointer onto the application's own minimize button, hover about 800 ms, click, then restore by physically clicking the taskbar (or the tray icon if that is the application's current behavior). Record which restoration path was used; do not merge different paths into one trial count. Verify content scrolling/input without dragging, resizing or maximizing as a recovery aid.
 
 Test normal and maximized windows, longer hover, and short/long hidden intervals. Test other reachable application minimize entry points separately. Windows minimize shortcuts exercise a distinct path and are not a replacement for application-button tests.
 
@@ -40,4 +40,4 @@ Test normal and maximized windows, longer hover, and short/long hidden intervals
 
 The original tested artifacts were approximately 0.86 MiB (backend), 0.35 MiB (desktop library), and 0.15 MiB (shell copy), or 1.36 MiB combined. Size is not the reason this draft excludes them.
 
-The compiled artifacts retain local build paths; the shell copy also has a machine-specific absolute dependency. A reusable binary release would require reproducible path sanitization, a relocatable deployment design, and fresh validation. The current public draft contains source only.
+The compiled artifacts retain local build paths; the shell copy also has a machine-specific absolute dependency. A reusable binary release would require reproducible path sanitization, a relocatable deployment design, and fresh validation. The published repository contains source only. The local stripped production copies total approximately 381 KiB; see [production notes](PRODUCTION.md) for their custom-build classification and the low-log configuration.

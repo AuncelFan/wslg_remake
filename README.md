@@ -38,7 +38,7 @@ Two components are rebuilt: `rdp-backend.so` and `libweston-desktop-9.so.0`. A c
 
 Installed system components are preserved. The shell is copied and its ELF dependency rewritten; its source is not rebuilt. This repository does not ship the machine-specific `.so` artifacts or a ready-made configuration.
 
-See [build and test notes](docs/BUILD.md) and [WSL update maintenance](docs/MAINTENANCE.md). The scripts are developer tools for the pinned baseline, not a universal installer. Rebuild against the matching WSLg SDK and review changes before deploying on another version.
+See [build and test notes](docs/BUILD.md), [normal-use configuration and build classification](docs/PRODUCTION.md), and [WSL update maintenance](docs/MAINTENANCE.md). The scripts are developer tools for the pinned baseline, not a universal installer. Rebuild against the matching WSLg SDK and review changes before deploying on another version.
 
 ## Public contents
 
