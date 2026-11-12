@@ -1,0 +1,27 @@
+# Source-only public repository. All runtime evidence stays local.
+.work/
+.cache/
+.state/
+.sandbox/
+evidence/
+__pycache__/
+*.pyc
+*.so
+*.so.*
+*.o
+*.log
+*.dmp
+*.core
+.env
+.env.*
+.wslconfig
+.wslgconfig
+*.png
+*.jpg
+*.jpeg
+*.sqlite*
+*.db
+*.har
+*.tar
+*.tar.gz
+*.zip

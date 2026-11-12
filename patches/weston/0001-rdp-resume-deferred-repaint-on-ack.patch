@@ -1,0 +1,170 @@
+diff --git a/libweston/backend-rdp/rdp.c b/libweston/backend-rdp/rdp.c
+index f135a18..1372a32 100644
+--- a/libweston/backend-rdp/rdp.c
++++ b/libweston/backend-rdp/rdp.c
+@@ -730,6 +730,7 @@ rdp_peer_context_new(freerdp_peer* client, RdpPeerContext* context)
+ 
+ 	context->loop_task_event_source_fd = -1;
+ 	context->loop_task_event_source = NULL;
++	context->rail_repaint_task_pending = false;
+ 	wl_list_init(&context->loop_task_list);
+ 
+ 	context->rfx_context = rfx_context_new(TRUE);
+diff --git a/libweston/backend-rdp/rdp.h b/libweston/backend-rdp/rdp.h
+index 8ba0dee..df5e74a 100644
+--- a/libweston/backend-rdp/rdp.h
++++ b/libweston/backend-rdp/rdp.h
+@@ -189,6 +189,8 @@ struct rdp_head {
+ 
+ struct rdp_output {
+ 	struct weston_output base;
++	/* Compositor-thread state: retry work skipped by RAIL backpressure. */
++	bool rail_repaint_deferred;
+ 	struct wl_event_source *finish_frame_timer;
+ 	pixman_image_t *shadow_surface;
+ 	uint32_t index;
+@@ -256,6 +258,8 @@ struct rdp_peer_context {
+ 	struct wl_event_source *loop_task_event_source;
+ 	pthread_mutex_t loop_task_list_mutex;
+ 	struct wl_list loop_task_list; // struct rdp_loop_task::link
++	/* Protected by loop_task_list_mutex; at most one ACK wake task. */
++	bool rail_repaint_task_pending;
+ 
+ 	// RAIL power management.
+ 	struct wl_listener idle_listener;
+diff --git a/libweston/backend-rdp/rdprail.c b/libweston/backend-rdp/rdprail.c
+index d3ba25c..529c2de 100644
+--- a/libweston/backend-rdp/rdprail.c
++++ b/libweston/backend-rdp/rdprail.c
+@@ -1190,6 +1190,66 @@ rail_grfx_client_cache_import_offer(RdpgfxServerContext *context,
+ 	return CHANNEL_RC_OK;
+ }
+ 
++/* ACKs release RAIL backpressure on a channel thread. Keep their immediate
++ * state updates: window destruction may wait for them on the compositor
++ * thread. Only the repaint wakeup is dispatched to the display loop.
++ */
++static void
++rdp_rail_resume_repaint(bool freeOnly, void *arg)
++{
++	struct rdp_loop_task *task = arg;
++	RdpPeerContext *peer_ctx = task->peerCtx;
++	struct rdp_backend *b;
++	struct weston_output *output;
++
++	if (freeOnly)
++		goto out;
++
++	b = peer_ctx->rdpBackend;
++	assert_compositor_thread(b);
++
++	pthread_mutex_lock(&peer_ctx->loop_task_list_mutex);
++	peer_ctx->rail_repaint_task_pending = false;
++	pthread_mutex_unlock(&peer_ctx->loop_task_list_mutex);
++
++	if (!peer_ctx->isAcknowledgedSuspended &&
++	    (peer_ctx->currentFrameId - peer_ctx->acknowledgedFrameId) >= 2)
++		goto out;
++
++	/* The live output list avoids retaining surface/output pointers across
++	 * threads and excludes outputs disabled or destroyed before dispatch.
++	 * The flag is cleared by the next repaint, not by this wakeup.
++	 */
++	wl_list_for_each(output, &b->compositor->output_list, link) {
++		if (to_rdp_output(output)->rail_repaint_deferred) {
++			rdp_debug_verbose(b, "resuming deferred RAIL repaint: output %u\n",
++					  output->id);
++			weston_output_schedule_repaint(output);
++		}
++	}
++out:
++	free(task);
++}
++
++static void
++rdp_rail_queue_repaint(RdpPeerContext *peer_ctx)
++{
++	struct rdp_loop_task *task;
++
++	assert_not_compositor_thread(peer_ctx->rdpBackend);
++
++	pthread_mutex_lock(&peer_ctx->loop_task_list_mutex);
++	if (peer_ctx->rail_repaint_task_pending) {
++		pthread_mutex_unlock(&peer_ctx->loop_task_list_mutex);
++		return;
++	}
++	peer_ctx->rail_repaint_task_pending = true;
++	pthread_mutex_unlock(&peer_ctx->loop_task_list_mutex);
++
++	task = xmalloc(sizeof *task);
++	rdp_dispatch_task_to_display_loop(peer_ctx, rdp_rail_resume_repaint, task);
++}
++
+ static UINT
+ rail_grfx_client_frame_acknowledge(RdpgfxServerContext *context,
+ 				   const RDPGFX_FRAME_ACKNOWLEDGE_PDU *frameAcknowledge)
+@@ -1201,6 +1261,7 @@ rail_grfx_client_frame_acknowledge(RdpgfxServerContext *context,
+ 			  frameAcknowledge->queueDepth, frameAcknowledge->frameId, frameAcknowledge->totalFramesDecoded);
+ 	peer_ctx->acknowledgedFrameId = frameAcknowledge->frameId;
+ 	peer_ctx->isAcknowledgedSuspended = (frameAcknowledge->queueDepth == 0xffffffff);
++	rdp_rail_queue_repaint(peer_ctx);
+ 	return CHANNEL_RC_OK;
+ }
+ 
+@@ -1334,6 +1395,7 @@ gfxredir_client_present_buffer_ack(GfxRedirServerContext *context,
+ 	}
+ 	rdp_id_manager_unlock(&peer_ctx->windowId);
+ 
++	rdp_rail_queue_repaint(peer_ctx);
+ 	return CHANNEL_RC_OK;
+ }
+ #endif /* HAVE_FREERDP_GFXREDIR_H */
+@@ -1972,6 +2034,7 @@ rdp_rail_schedule_update_window(struct wl_listener *listener, void *data)
+ 
+ struct update_window_iter_data {
+ 	uint32_t output_id;
++	bool repaint_deferred;
+ 	uint32_t startedFrameId;
+ 	BOOL needEndFrame;
+ 	BOOL isUpdatePending;
+@@ -3014,10 +3077,12 @@ rdp_rail_update_window_iter(void *element, void *data)
+ 		rdp_rail_update_cursor(surface);
+ 	else if (rail_state->isUpdatePending == FALSE)
+ 		rdp_rail_update_window(surface, iter_data);
+-	else
++	else {
++		iter_data->repaint_deferred = true;
+ 		rdp_debug_verbose(b, "window update is skipped for windowId:0x%x, isUpdatePending = %d\n",
+ 				  rail_state->window_id,
+ 				  rail_state->isUpdatePending);
++	}
+ }
+ 
+ static uint32_t
+@@ -3158,6 +3223,10 @@ rdp_rail_output_repaint(struct weston_output *output,
+ 	struct weston_compositor *ec = output->compositor;
+ 	struct rdp_backend *b = to_rdp_backend(ec);
+ 	RdpPeerContext *peer_ctx = (RdpPeerContext *)b->rdp_peer->context;
++	struct rdp_output *rdp_output = to_rdp_output(output);
++
++	assert_compositor_thread(b);
++	rdp_output->rail_repaint_deferred = false;
+ 
+ 	if (peer_ctx->isAcknowledgedSuspended ||
+ 	    ((peer_ctx->currentFrameId - peer_ctx->acknowledgedFrameId) < 2)) {
+@@ -3178,6 +3247,7 @@ rdp_rail_output_repaint(struct weston_output *output,
+ 		rdp_id_manager_for_each(&peer_ctx->windowId,
+ 					rdp_rail_update_window_iter,
+ 					&iter_data);
++		rdp_output->rail_repaint_deferred = iter_data.repaint_deferred;
+ 		if (iter_data.needEndFrame) {
+ 			/* if frame is started at above iteration, send EndFrame here. */
+ 			RDPGFX_END_FRAME_PDU endFrame = {};
+@@ -3196,6 +3266,7 @@ rdp_rail_output_repaint(struct weston_output *output,
+ 			weston_compositor_wake(b->compositor);
+ 		}
+ 	} else {
++		rdp_output->rail_repaint_deferred = true;
+ 		rdp_debug_verbose(b, "frame update is skipped. currentFrameId:%d, acknowledgedFrameId:%d, isAcknowledgedSuspended:%d\n",
+ 				  peer_ctx->currentFrameId,
+ 				  peer_ctx->acknowledgedFrameId,

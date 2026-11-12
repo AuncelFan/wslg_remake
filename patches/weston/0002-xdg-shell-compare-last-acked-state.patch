@@ -1,0 +1,18 @@
+diff --git a/libweston-desktop/xdg-shell.c b/libweston-desktop/xdg-shell.c
+--- a/libweston-desktop/xdg-shell.c
++++ b/libweston-desktop/xdg-shell.c
+@@ -983,8 +983,12 @@ weston_desktop_xdg_toplevel_state_compare(struct weston_desktop_xdg_toplevel *toplevel)
+ 		return false;
+ 
+ 	if (wl_list_empty(&toplevel->base.configure_list)) {
+-		/* Last configure is actually the current state, just use it */
+-		configured.state = toplevel->current.state;
++		/* Compare against the last acknowledged configure. A commit
++		 * without a new buffer can leave current.state unchanged after
++		 * the renderer has released its surface buffer reference. Using
++		 * that stale state can suppress the activation configure needed
++		 * to restore a minimized client. */
++		configured.state = toplevel->next.state;
+ 		configured.size.width = toplevel->base.surface->width;
+ 		configured.size.height = toplevel->base.surface->height;
+ 	} else {
