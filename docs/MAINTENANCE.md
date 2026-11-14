@@ -1,6 +1,6 @@
 # Maintenance after WSL updates
 
-The accepted baseline targets WSL 3.0.5.0 / WSLg 1.0.79, Weston 9.0.0 commit `a7e35fdab455dce5774b43b8aff682f748307e31`, and FreeRDP commit `c4030980b29322a9cb2190711a5fadeeeb8b6a33`. It modifies four source files (+83 / −3 lines, including comments).
+The accepted baseline targets WSL 3.0.5.0 / WSLg 1.0.79, Weston 9.0.0 commit `a7e35fdab455dce5774b43b8aff682f748307e31`, and FreeRDP commit `c4030980b29322a9cb2190711a5fadeeeb8b6a33`. The minimize patches modify four files (+83 / -3); the native-IME patch modifies another five-file set (+557 / -171), with eight distinct source files overall. See [IME implementation](IME.md) and [current production configuration](IME_PRODUCTION.md).
 
 ## Keep a private local baseline
 
@@ -27,6 +27,15 @@ Keep raw environment snapshots, logs and desktop evidence private. Do not commit
 6. Review RAIL ACK callbacks, task threading, destruction/wait behavior, backpressure conditions and output lifetime.
 7. Build into new directories; make the shell copy from the **new** stock shell. Check exported symbols, required symbols, SONAME/dependencies, GLIBC limits and actual process maps.
 8. Repeat the same physical minimize/restore sequence and preserve a new private baseline. Do not overwrite the previous accepted baseline.
+
+For the IME extension, also review input-panel roles, parent/output lifecycle,
+RAIL popup ownership/no-activation, state-only hide delivery, and the separate
+panel plugin API. Check trusted helper FD handoff, Fcitx protocol support and
+the complete service lifecycle. Repeat native preedit, candidate selection,
+commit/cancel, focus changes and minimize/restore with an active preedit.
+Production shell source is rebuilt, and its relocated desktop dependency must
+point to the matching production directory. Keep private per-file rollback
+manifests; do not replace them with the historical whole-config stock rollback.
 
 Successful `git apply --check` only establishes textual applicability. Matching fingerprints only establish absence of measured drift. Neither proves behavior or complete ABI compatibility.
 

@@ -1,12 +1,17 @@
-# Source-only public repository. All runtime evidence stays local.
-.work/
-.cache/
-.state/
 .sandbox/
-runtime/
-evidence/
+.state/
 __pycache__/
 *.pyc
+
+# Local experiment state and publication staging must never be added wholesale.
+.work/
+.cache/
+.publish/
+runtime/
+evidence/
+docs/production-*.md
+docs/ime-production-*.md
+docs/ime-candidate-deployment-*.md
 *.so
 *.so.*
 *.o

@@ -1,0 +1,1004 @@
+From: wslg_remake local experimental work
+Subject: [PATCH 3/3] rdprail: map native input panels with owned nonactivating RAIL windows
+
+Pinned Weston a7e35fdab455dce5774b43b8aff682f748307e31, after patches 1 and 2.
+Local custom IME support; original-application success reported on 2026-11-14.
+Individual edge cases and long-duration stability are not fully accepted.
+Requires the matching RDP backend and RAIL shell, plus the trusted-FD bridge.
+
+--- a/include/libweston/backend-rdp.h
++++ b/include/libweston/backend-rdp.h
+@@ -207,6 +207,14 @@
+ }
+ 
+ #define RDP_SHARED_MEMORY_NAME_SIZE (32 + 4 + 2)
++
++/* Separate extension: keep the existing RAIL shell/backend ABI unchanged. */
++#define WESTON_RDPRAIL_INPUT_PANEL_API_NAME "weston_rdprail_input_panel_api_v1"
++#define WESTON_RDPRAIL_INPUT_PANEL_ROLE "rdprail-input-panel"
++struct weston_rdprail_input_panel_api {
++	void (*set_input_panel)(struct weston_surface *surface,
++				struct weston_surface *parent, bool visible);
++};
+ 
+ struct weston_rdp_shared_memory {
+ 	int fd;
+@@ -263,6 +271,7 @@
+ 
+ 	/* rdpgfx surface */
+ 	uint32_t surface_id;
++	bool input_panel_configured;
+ };
+ 
+ #define WESTON_RDP_BACKEND_CONFIG_VERSION 3
+--- a/libweston/backend-rdp/rdprail.c
++++ b/libweston/backend-rdp/rdprail.c
+@@ -49,6 +49,15 @@
+ 
+ #define RAIL_WINDOW_FULLSCREEN_STYLE (WS_POPUP | WS_VISIBLE | WS_CLIPSIBLINGS | WS_GROUP | WS_TABSTOP)
+ #define RAIL_WINDOW_NORMAL_STYLE (RAIL_WINDOW_FULLSCREEN_STYLE | WS_THICKFRAME | WS_CAPTION)
++#define RAIL_INPUT_PANEL_STYLE (WS_POPUP | WS_VISIBLE | WS_CLIPSIBLINGS)
++#define RAIL_INPUT_PANEL_EXSTYLE (WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE)
++
++static bool
++rdp_rail_is_input_panel(struct weston_surface *surface)
++{
++	return surface && surface->role_name &&
++		strcmp(surface->role_name, WESTON_RDPRAIL_INPUT_PANEL_ROLE) == 0;
++}
+ 
+ #define max(a, b) (((a) > (b)) ? (a) : (b))
+ #define min(a, b) (((a) > (b)) ? (b) : (a))
+@@ -58,6 +67,8 @@
+ static void rdp_rail_destroy_window(struct wl_listener *listener, void *data);
+ static void rdp_rail_schedule_update_window(struct wl_listener *listener, void *data);
+ static void rdp_rail_dump_window_label(struct weston_surface *surface, char *label, uint32_t label_size);
++static void rdp_rail_set_input_panel(struct weston_surface *surface,
++				    struct weston_surface *parent, bool visible);
+ 
+ struct lang_GUID {
+ 	uint32_t Data1;
+@@ -1663,7 +1674,8 @@
+ 				  __func__, rail_state->window_id);
+ 	}
+ 
+-	if (is_window_shadow_remoting_disabled(peer_ctx)) {
++	if (!rdp_rail_is_input_panel(surface) &&
++	    is_window_shadow_remoting_disabled(peer_ctx)) {
+ 		/* drop window shadow area */
+ 		api->get_window_geometry(surface, &geometry);
+ 
+@@ -1697,7 +1709,8 @@
+ 				     &clientPos.x, &clientPos.y,
+ 				     &clientPos.width, &clientPos.height);
+ 
+-		if (is_window_shadow_remoting_disabled(peer_ctx)) {
++		if (!rdp_rail_is_input_panel(surface) &&
++	    is_window_shadow_remoting_disabled(peer_ctx)) {
+ 			to_client_coordinate(peer_ctx, surface->output,
+ 					     &window_margin_left,
+ 					     &window_margin_top,
+@@ -1721,6 +1734,10 @@
+ 	window_order_info.fieldFlags |= WINDOW_ORDER_FIELD_STYLE;
+ 	window_state_order.style = RAIL_WINDOW_NORMAL_STYLE;
+ 	window_state_order.extendedStyle = WS_EX_LAYERED;
++	if (rdp_rail_is_input_panel(surface)) {
++		window_state_order.style = RAIL_INPUT_PANEL_STYLE;
++		window_state_order.extendedStyle = RAIL_INPUT_PANEL_EXSTYLE;
++	}
+ 
+ 	window_order_info.fieldFlags |= WINDOW_ORDER_FIELD_OWNER;
+ 	if (rail_state->parent_surface &&
+@@ -1772,7 +1789,8 @@
+ 	window_state_order.numVisibilityRects = 1;
+ 	window_state_order.visibilityRects = &window_vis;
+ 
+-	if (is_window_shadow_remoting_disabled(peer_ctx)) {
++	if (!rdp_rail_is_input_panel(surface) &&
++	    is_window_shadow_remoting_disabled(peer_ctx)) {
+ 		/* add resize margin area */
+ 		window_order_info.fieldFlags |= WINDOW_ORDER_FIELD_RESIZE_MARGIN_X |
+ 						WINDOW_ORDER_FIELD_RESIZE_MARGIN_Y;
+@@ -1871,6 +1889,16 @@
+ #endif /* HAVE_FREERDP_GFXREDIR_H */
+ 
+ static void
++rdp_rail_detach_input_panel_iter(void *element, void *data)
++{
++	struct weston_surface *surface = element;
++	struct weston_surface_rail_state *rail_state = surface->backend_state;
++	if (rdp_rail_is_input_panel(surface) && rail_state &&
++	    rail_state->parent_surface == data)
++		rdp_rail_set_input_panel(surface, NULL, false);
++}
++
++static void
+ rdp_rail_destroy_window(struct wl_listener *listener, void *data)
+ {
+ 	struct weston_surface *surface = data;
+@@ -1898,6 +1926,10 @@
+ 	peer_ctx = (RdpPeerContext *)b->rdp_peer->context;
+ 	gfx_ctx = peer_ctx->rail_grfx_server_context;
+ 	update = b->rdp_peer->context->update;
++	/* Detach owned candidate windows BEFORE deleting their owner. Windows
++	 * otherwise destroys them along with the owner, invalidating our IDs. */
++	rdp_id_manager_for_each(&peer_ctx->windowId,
++				rdp_rail_detach_input_panel_iter, surface);
+ 	if (rail_state->isCursor) {
+ 		pointerSystem.type = SYSPTR_NULL;
+ 		update->BeginPaint(update->context);
+@@ -2194,11 +2226,13 @@
+ 				  __func__, rail_state->window_id);
+ 	}
+ 
+-	if (should_strip_window_shadow(peer_ctx, rail_state)) {
++	if (!rdp_rail_is_input_panel(surface) &&
++	    should_strip_window_shadow(peer_ctx, rail_state)) {
+ 		/* drop window shadow area */
+ 		api->get_window_geometry(surface, &geometry);
+ 
+-		if (is_window_shadow_remoting_disabled(peer_ctx)) {
++		if (!rdp_rail_is_input_panel(surface) &&
++	    is_window_shadow_remoting_disabled(peer_ctx)) {
+ 			/* calculate window margin from input extents */
+ 			if (geometry.x > max(0, surface->input.extents.x1))
+ 				window_margin_left = geometry.x -
+@@ -2240,7 +2274,8 @@
+ 				     &newClientPos.width,
+ 				     &newClientPos.height);
+ 
+-		if (should_strip_window_shadow(peer_ctx, rail_state)) {
++		if (!rdp_rail_is_input_panel(surface) &&
++	    should_strip_window_shadow(peer_ctx, rail_state)) {
+ 			to_client_coordinate(peer_ctx, surface->output,
+ 					     &window_margin_left,
+ 					     &window_margin_top,
+@@ -2407,7 +2442,8 @@
+ 			window_state_order.TaskbarButton = (BYTE)rail_state->taskbarButton;
+ 		}
+ 
+-		if (is_window_shadow_remoting_disabled(peer_ctx)) {
++		if (!rdp_rail_is_input_panel(surface) &&
++	    is_window_shadow_remoting_disabled(peer_ctx)) {
+ 			/* Due to how mstsc/msrdc works, window margin must not be set
+ 			   while window is snapped unless they are changed. */
+ 			if ((rail_state->forceUpdateWindowState &&
+@@ -2463,7 +2499,8 @@
+ 			window_state_order.visibilityRects = &window_vis;
+ 			window_state_order.clientAreaWidth = newClientPos.width;
+ 			window_state_order.clientAreaHeight = newClientPos.height;
+-			if (rail_state->showState != RDP_WINDOW_SHOW_FULLSCREEN) {
++			if (!rdp_rail_is_input_panel(surface) &&
++			    rail_state->showState != RDP_WINDOW_SHOW_FULLSCREEN) {
+ 				/* when window is not in fullscreen, there should be 'some' area for title bar,
+ 				   thus substracting 32 pixels out from window size for client area, this value
+ 				   does not need to be accurate at all, all here need to tell RDP client is that
+@@ -2548,6 +2585,16 @@
+ 					  newClientPos.x, newClientPos.y);
+ 		}
+ 
++		/* Roles are assigned after create_surface_signal. Never rely on the
++		 * initial WindowCreate to supply the final candidate-window style. */
++		if (rdp_rail_is_input_panel(surface)) {
++			window_order_info.fieldFlags |= WINDOW_ORDER_FIELD_STYLE |
++				WINDOW_ORDER_FIELD_TASKBAR_BUTTON;
++			window_state_order.style = RAIL_INPUT_PANEL_STYLE;
++			window_state_order.extendedStyle = RAIL_INPUT_PANEL_EXSTYLE;
++			window_state_order.TaskbarButton = 1;
++			rail_state->taskbarButton = 1;
++		}
+ 		update = b->rdp_peer->context->update;
+ 		update->BeginPaint(update->context);
+ 		update->window->WindowUpdate(update->context, &window_order_info, &window_state_order);
+@@ -2731,7 +2778,8 @@
+ 			}
+ 			/* damage_box represents damaged area in contentBuffer */
+ 			/* if it's not remoting window shadow, exclude the area from damage_box */
+-			if (should_strip_window_shadow(peer_ctx, rail_state)) {
++			if (!rdp_rail_is_input_panel(surface) &&
++	    should_strip_window_shadow(peer_ctx, rail_state)) {
+ 				if (damage_box.x1 < content_buffer_window_geometry.x)
+ 					damage_box.x1 = content_buffer_window_geometry.x;
+ 				if (damage_box.x2 > content_buffer_window_geometry.x + content_buffer_window_geometry.width)
+@@ -3201,6 +3249,21 @@
+ 					       WINDOW_ORDER_FIELD_DESKTOP_ZORDER |
+ 					       WINDOW_ORDER_FIELD_DESKTOP_ACTIVE_WND;
+ 		monitored_desktop_order.activeWindowId = windowIdArray[0];
++		/* A TOP_UI candidate is first in z-order, but is never the active
++		 * keyboard window. Preserve ordinary-window ordering/activation. */
++		if (rdp_rail_is_input_panel(rdp_id_manager_lookup(
++				&peer_ctx->windowId, windowIdArray[0]))) {
++			uint32_t i;
++			monitored_desktop_order.activeWindowId = RDP_RAIL_MARKER_WINDOW_ID;
++			for (i = 1; i < iCurrent; i++) {
++				struct weston_surface *candidate = rdp_id_manager_lookup(
++					&peer_ctx->windowId, windowIdArray[i]);
++				if (!rdp_rail_is_input_panel(candidate)) {
++					monitored_desktop_order.activeWindowId = windowIdArray[i];
++					break;
++				}
++			}
++		}
+ 		monitored_desktop_order.numWindowIds = iCurrent;
+ 		monitored_desktop_order.windowIds = windowIdArray;
+ 
+@@ -4906,6 +4969,93 @@
+ 	return NULL;
+ }
+ 
++/* State-only input-panel path: no output, buffer, frame or ACK dependency. */
++static void
++rdp_rail_set_input_panel(struct weston_surface *surface,
++			 struct weston_surface *parent, bool visible)
++{
++	struct rdp_backend *b = to_rdp_backend(surface->compositor);
++	struct weston_surface_rail_state *rail_state = surface->backend_state;
++	struct weston_surface_rail_state *parent_state;
++	RdpPeerContext *peer_ctx;
++	rdpUpdate *update;
++	WINDOW_ORDER_INFO info = {};
++	WINDOW_STATE_ORDER state = {};
++	uint32_t owner = RDP_RAIL_DESKTOP_WINDOW_ID;
++	uint32_t requested;
++	bool changed;
++	BOOL sent;
++	if (!rdp_rail_is_input_panel(surface))
++		return;
++	if (!b || !b->rdp_peer || !b->rdp_peer->context)
++		return;
++	assert_compositor_thread(b);
++	if (!rail_state && visible) {
++		rdp_rail_create_window(NULL, surface);
++		rail_state = surface->backend_state;
++	}
++	if (!rail_state)
++		return;
++	if (!visible || !parent || parent == surface ||
++	    parent->compositor != surface->compositor)
++		parent = NULL;
++	parent_state = parent ? parent->backend_state : NULL;
++	if (parent_state && parent_state->isWindowCreated &&
++	    weston_surface_is_mapped(parent))
++		owner = parent_state->window_id;
++	else {
++		visible = false;
++		parent = NULL;
++	}
++	requested = visible ? RDP_WINDOW_SHOW : RDP_WINDOW_HIDE;
++	changed = !rail_state->input_panel_configured ||
++		rail_state->parent_surface != parent ||
++		rail_state->parent_window_id != owner ||
++		rail_state->showState_requested != requested;
++	rail_state->parent_surface = parent;
++	rail_state->showState_requested = requested;
++	if (!rail_state->isWindowCreated || rail_state->error)
++		return;
++	peer_ctx = (RdpPeerContext *)b->rdp_peer->context;
++	if (!changed && (visible || rail_state->showState == RDP_WINDOW_HIDE))
++		return;
++	info.windowId = rail_state->window_id;
++	info.fieldFlags = WINDOW_ORDER_TYPE_WINDOW | WINDOW_ORDER_FIELD_STYLE |
++		WINDOW_ORDER_FIELD_OWNER | WINDOW_ORDER_FIELD_TASKBAR_BUTTON;
++	state.style = RAIL_INPUT_PANEL_STYLE;
++	state.extendedStyle = RAIL_INPUT_PANEL_EXSTYLE;
++	state.ownerWindowId = owner;
++	state.TaskbarButton = 1;
++	if (!visible) {
++		info.fieldFlags |= WINDOW_ORDER_FIELD_SHOW;
++		state.showState = WINDOW_HIDE;
++	}
++	update = b->rdp_peer->context->update;
++	update->BeginPaint(update->context);
++	sent = update->window->WindowUpdate(update->context, &info, &state);
++	update->EndPaint(update->context);
++	if (!sent) {
++		rail_state->forceUpdateWindowState = true;
++		rdp_debug_error(b, "input panel WindowUpdate failed (windowId:0x%x)\n",
++				rail_state->window_id);
++		return;
++	}
++	if (!visible)
++		rail_state->showState = RDP_WINDOW_HIDE;
++	/* The style and OWNER=desktop must be sent even after parent=NULL. */
++	rail_state->parent_window_id = owner;
++	rail_state->taskbarButton = 1;
++	rail_state->input_panel_configured = true;
++	rail_state->forceUpdateWindowState = true;
++	peer_ctx->is_window_zorder_dirty = true;
++	if (visible)
++		weston_surface_damage(surface);
++}
++
++static const struct weston_rdprail_input_panel_api input_panel_api = {
++	.set_input_panel = rdp_rail_set_input_panel,
++};
++
+ struct weston_rdprail_api rdprail_api = {
+ 	.shell_initialize_notify = rdp_rail_shell_initialize_notify,
+ 	.start_window_move = rdp_rail_start_window_move,
+@@ -4931,6 +5081,12 @@
+ 		rdp_debug_error(b, "Failed to register rdprail API.\n");
+ 		return -1;
+ 	}
++
++	ret = weston_plugin_api_register(b->compositor,
++			WESTON_RDPRAIL_INPUT_PANEL_API_NAME,
++			&input_panel_api, sizeof input_panel_api);
++	if (ret < 0)
++		return -1;
+ 
+ #ifdef HAVE_FREERDP_RDPAPPLIST_H
+ 	bool use_rdpapplist = config->rail_config.use_rdpapplist;
+--- a/rdprail-shell/shell.h
++++ b/rdprail-shell/shell.h
+@@ -80,6 +80,8 @@
+ 	struct wl_listener transform_listener;
+ 	struct wl_listener destroy_listener;
+ 	struct wl_listener show_input_panel_listener;
++	struct wl_listener hide_input_panel_listener;
++	struct wl_listener update_input_panel_listener;
+ 
+ 	struct weston_layer fullscreen_layer;
+ 
+@@ -114,6 +116,15 @@
+ 
+ 	struct {
+ 		struct wl_resource *binding;
++		struct wl_global *global;
++		struct wl_list surfaces;
++		struct weston_layer layer;
++		const struct weston_rdprail_input_panel_api *rail_api;
++		struct wl_listener parent_destroy_listener;
++		struct wl_listener parent_commit_listener;
++		struct wl_listener parent_transform_listener;
++		bool showing;
++		bool shutting_down;
+ 	} input_panel;
+ 
+ 	bool allow_zap;
+@@ -180,6 +191,10 @@
+ input_panel_setup(struct desktop_shell *shell);
+ void
+ input_panel_destroy(struct desktop_shell *shell);
++
++void
++input_panel_hide_for_surface(struct desktop_shell *shell,
++			     struct weston_surface *surface);
+ 
+ typedef void (*shell_for_each_layer_func_t)(struct desktop_shell *,
+ 					    struct weston_layer *, void *);
+--- a/rdprail-shell/shell.c
++++ b/rdprail-shell/shell.c
+@@ -1912,6 +1912,7 @@
+ 
+ 	shsurf->saved_showstate = rail_state->showState;
+ 	shsurf->saved_showstate_valid = true;
++	input_panel_hide_for_surface(shsurf->shell, surface);
+ 	rail_state->showState_requested = RDP_WINDOW_SHOW_MINIMIZED;
+ 
+ 	current_ws = get_current_workspace(shsurf->shell);
+@@ -4555,6 +4556,8 @@
+ 	wl_list_remove(&shell->transform_listener.link);
+ 
+ 	app_list_destroy(shell);
++	/* Plugin APIs may be unregistered by compositor destroy listeners. */
++	shell->input_panel.shutting_down = true;
+ 	text_backend_destroy(shell->text_backend);
+ 	input_panel_destroy(shell);
+ 
+--- a/rdprail-shell/input-panel.c
++++ b/rdprail-shell/input-panel.c
+@@ -16,7 +16,7 @@
+  *
+  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+  * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+  * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+@@ -24,113 +24,278 @@
+  */
+ 
+ #include "config.h"
+-
+ #include <stdlib.h>
+ #include <stdint.h>
+ #include <stdio.h>
+ #include <string.h>
+-
++#include <math.h>
++#include <libweston/backend-rdp.h>
+ #include "shell.h"
+ #include "input-method-unstable-v1-server-protocol.h"
+ #include "shared/helpers.h"
+ 
+ struct input_panel_surface {
+ 	struct wl_resource *resource;
+-	struct wl_signal destroy_signal;
+-
+ 	struct desktop_shell *shell;
+-
++	struct wl_list link;
+ 	struct weston_surface *surface;
++	struct weston_view *view;
+ 	struct wl_listener surface_destroy_listener;
++	struct weston_output *output;
++	struct wl_listener output_destroy_listener;
++	bool configured;
++	bool overlay;
+ };
+ 
++static void refresh_input_panels(struct desktop_shell *shell);
++
++static void
++reset_listener(struct wl_listener *listener)
++{
++	wl_list_remove(&listener->link);
++	wl_list_init(&listener->link);
++}
++
++static void
++hide_panel(struct input_panel_surface *panel)
++{
++	/* Unmapped surfaces have output_mask=0: the repaint iterator cannot
++	 * hide their host windows. Send a state-only hide before dropping owner. */
++	if (!panel->shell->input_panel.shutting_down)
++		panel->shell->input_panel.rail_api->set_input_panel(panel->surface,
++								 NULL, false);
++	weston_surface_unmap(panel->surface);
++}
++
++static void
++panel_output_destroyed(struct wl_listener *listener, void *data)
++{
++	struct input_panel_surface *panel =
++		container_of(listener, struct input_panel_surface,
++			     output_destroy_listener);
++	(void)data;
++	hide_panel(panel);
++	reset_listener(&panel->output_destroy_listener);
++	panel->output = NULL;
++}
++
++static void
++set_panel_output(struct input_panel_surface *panel, struct weston_output *output)
++{
++	if (panel->output == output)
++		return;
++	reset_listener(&panel->output_destroy_listener);
++	panel->output = output;
++	if (output)
++		wl_signal_add(&output->destroy_signal,
++			      &panel->output_destroy_listener);
++}
++
++static bool
++parent_is_visible(struct desktop_shell *shell, struct weston_view **view)
++{
++	struct weston_surface *parent = shell->text_input.surface;
++	struct weston_surface_rail_state *rail;
++	if (!shell->input_panel.showing || !parent ||
++	    !weston_surface_is_mapped(parent) || !parent->output)
++		return false;
++	rail = parent->backend_state;
++	if (rail && (rail->showState_requested == RDP_WINDOW_HIDE ||
++		     rail->showState_requested == RDP_WINDOW_SHOW_MINIMIZED))
++		return false;
++	*view = get_default_view(parent);
++	return *view && weston_view_is_mapped(*view);
++}
++
++static void
++position_panel(struct input_panel_surface *panel)
++{
++	struct desktop_shell *shell = panel->shell;
++	struct weston_view *parent_view;
++	struct weston_output *output;
++	struct shell_output *shell_output;
++	pixman_rectangle32_t area;
++	float x, y, above, unused_x;
++	int32_t max_x, max_y;
++	if (!panel->configured || panel->surface->width <= 0 ||
++	    panel->surface->height <= 0 ||
++	    !parent_is_visible(shell, &parent_view)) {
++		hide_panel(panel);
++		return;
++	}
++	output = shell->text_input.surface->output;
++	set_panel_output(panel, output);
++	area = (pixman_rectangle32_t){output->x, output->y,
++				     output->width, output->height};
++	wl_list_for_each(shell_output, &shell->output_list, link) {
++		if (shell_output->output == output &&
++		    shell_output->desktop_workarea.width > 0 &&
++		    shell_output->desktop_workarea.height > 0) {
++			area = shell_output->desktop_workarea;
++			break;
++		}
++	}
++	if (panel->overlay) {
++		weston_view_to_global_float(parent_view,
++			shell->text_input.cursor_rectangle.x1,
++			shell->text_input.cursor_rectangle.y2, &x, &y);
++		weston_view_to_global_float(parent_view,
++			shell->text_input.cursor_rectangle.x1,
++			shell->text_input.cursor_rectangle.y1, &unused_x, &above);
++		if (y + panel->surface->height > area.y + (int32_t)area.height)
++			y = above - panel->surface->height;
++	} else {
++		x = area.x + ((int32_t)area.width - panel->surface->width) / 2;
++		y = area.y + (int32_t)area.height - panel->surface->height;
++	}
++	max_x = area.x + (int32_t)area.width - panel->surface->width;
++	max_y = area.y + (int32_t)area.height - panel->surface->height;
++	x = fmaxf(area.x, fminf(x, max_x));
++	y = fmaxf(area.y, fminf(y, max_y));
++	weston_view_set_position(panel->view, floorf(x), floorf(y));
++	if (!weston_view_is_mapped(panel->view)) {
++		weston_layer_entry_insert(&shell->input_panel.layer.view_list,
++					 &panel->view->layer_link);
++		panel->surface->is_mapped = true;
++		panel->view->is_mapped = true;
++	}
++	weston_view_geometry_dirty(panel->view);
++	weston_view_update_transform(panel->view);
++	shell->input_panel.rail_api->set_input_panel(panel->surface,
++						   shell->text_input.surface, true);
++	weston_surface_damage(panel->surface);
++}
++
++static void
++refresh_input_panels(struct desktop_shell *shell)
++{
++	struct input_panel_surface *panel;
++	if (shell->input_panel.shutting_down)
++		return;
++	wl_list_for_each(panel, &shell->input_panel.surfaces, link)
++		position_panel(panel);
++}
++
++void
++input_panel_hide_for_surface(struct desktop_shell *shell,
++			     struct weston_surface *surface)
++{
++	struct input_panel_surface *panel;
++	if (surface && shell->text_input.surface != surface)
++		return;
++	shell->input_panel.showing = false;
++	wl_list_for_each(panel, &shell->input_panel.surfaces, link)
++		hide_panel(panel);
++}
++
++static void
++parent_destroyed(struct wl_listener *listener, void *data)
++{
++	struct desktop_shell *shell = container_of(listener, struct desktop_shell,
++						 input_panel.parent_destroy_listener);
++	input_panel_hide_for_surface(shell, data);
++	reset_listener(&shell->input_panel.parent_destroy_listener);
++	reset_listener(&shell->input_panel.parent_commit_listener);
++	shell->text_input.surface = NULL;
++}
++
++static void
++parent_committed(struct wl_listener *listener, void *data)
++{
++	struct desktop_shell *shell = container_of(listener, struct desktop_shell,
++						 input_panel.parent_commit_listener);
++	(void)data;
++	refresh_input_panels(shell);
++}
++
++static void
++parent_transformed(struct wl_listener *listener, void *data)
++{
++	struct desktop_shell *shell = container_of(listener, struct desktop_shell,
++						 input_panel.parent_transform_listener);
++	if (data == shell->text_input.surface)
++		refresh_input_panels(shell);
++}
++
+ static void
+ show_input_panels(struct wl_listener *listener, void *data)
+ {
+-	struct weston_surface *surface = (struct weston_surface*)data;
+-
+-	/* Output who requested to show input panels */
+-	if (surface && surface->resource) {
+-		pid_t pid;
+-		uid_t uid;
+-		gid_t gid;
+-		struct wl_client *client = wl_resource_get_client(surface->resource);
+-		wl_client_get_credentials(client, &pid, &uid, &gid);
+-		weston_log("%s pid:%d, uid:%d, gid:%d is requesting to show input panel\n",
+-			    __func__, pid, uid, gid);
+-		if (pid > 0 && !is_system_distro()) {
+-			char path[32] = {};
+-			char image_name[256] = {};
+-			sprintf(path, "/proc/%d/exe", pid);
+-			if (readlink(path, image_name, sizeof image_name) > 0)
+-				weston_log("%s pid:%d, image_name:%s\n",__func__, pid, image_name);
++	struct desktop_shell *shell = container_of(listener, struct desktop_shell,
++						 show_input_panel_listener);
++	struct weston_surface *parent = data;
++	if (parent != shell->text_input.surface) {
++		input_panel_hide_for_surface(shell, NULL);
++		reset_listener(&shell->input_panel.parent_destroy_listener);
++		reset_listener(&shell->input_panel.parent_commit_listener);
++		shell->text_input.surface = parent;
++		memset(&shell->text_input.cursor_rectangle, 0,
++		       sizeof shell->text_input.cursor_rectangle);
++		if (parent) {
++			wl_signal_add(&parent->destroy_signal,
++				      &shell->input_panel.parent_destroy_listener);
++			wl_signal_add(&parent->commit_signal,
++				      &shell->input_panel.parent_commit_listener);
+ 		}
+ 	}
++	shell->input_panel.showing = parent != NULL;
++	refresh_input_panels(shell);
++}
++
++static void
++hide_input_panels(struct wl_listener *listener, void *data)
++{
++	struct desktop_shell *shell = container_of(listener, struct desktop_shell,
++						 hide_input_panel_listener);
++	(void)data;
++	input_panel_hide_for_surface(shell, NULL);
++}
++
++static void
++update_input_panels(struct wl_listener *listener, void *data)
++{
++	struct desktop_shell *shell = container_of(listener, struct desktop_shell,
++						 update_input_panel_listener);
++	memcpy(&shell->text_input.cursor_rectangle, data, sizeof(pixman_box32_t));
++	refresh_input_panels(shell);
+ }
+ 
+ static int
+ input_panel_get_label(struct weston_surface *surface, char *buf, size_t len)
+ {
++	(void)surface;
+ 	return snprintf(buf, len, "rdprail-shell input panel");
+ }
+ 
+ static void
+ input_panel_committed(struct weston_surface *surface, int32_t sx, int32_t sy)
+ {
+-	weston_log("%s is not expected to be called\n", __func__);
+-}
+-
+-static void
+-destroy_input_panel_surface(struct input_panel_surface *input_panel_surface)
+-{
+-	wl_signal_emit(&input_panel_surface->destroy_signal, input_panel_surface);
+-
+-	wl_list_remove(&input_panel_surface->surface_destroy_listener.link);
+-
+-	input_panel_surface->surface->committed = NULL;
+-	input_panel_surface->surface->committed_private = NULL;
+-	weston_surface_set_label_func(input_panel_surface->surface, NULL);
+-
+-	free(input_panel_surface);
+-}
+-
+-static void
+-input_panel_handle_surface_destroy(struct wl_listener *listener, void *data)
+-{
+-	struct input_panel_surface *ipsurface = container_of(listener,
+-							     struct input_panel_surface,
+-							     surface_destroy_listener);
+-
+-	if (ipsurface->resource) {
+-		wl_resource_destroy(ipsurface->resource);
+-	} else {
+-		destroy_input_panel_surface(ipsurface);
+-	}
+-}
+-
+-static struct input_panel_surface *
+-create_input_panel_surface(struct desktop_shell *shell,
+-			   struct weston_surface *surface)
+-{
+-	struct input_panel_surface *input_panel_surface;
+-
+-	input_panel_surface = calloc(1, sizeof *input_panel_surface);
+-	if (!input_panel_surface)
+-		return NULL;
+-
+-	surface->committed = input_panel_committed;
+-	surface->committed_private = input_panel_surface;
+-	weston_surface_set_label_func(surface, input_panel_get_label);
+-
+-	input_panel_surface->shell = shell;
+-	input_panel_surface->surface = surface;
+-
+-	wl_signal_init(&input_panel_surface->destroy_signal);
+-	input_panel_surface->surface_destroy_listener.notify = input_panel_handle_surface_destroy;
+-	wl_signal_add(&surface->destroy_signal,
+-		      &input_panel_surface->surface_destroy_listener);
+-
+-	return input_panel_surface;
++	(void)sx;
++	(void)sy;
++	position_panel(surface->committed_private);
++}
++
++static void
++destroy_input_panel_surface_resource(struct wl_resource *resource)
++{
++	struct input_panel_surface *panel = wl_resource_get_user_data(resource);
++	hide_panel(panel);
++	wl_list_remove(&panel->surface_destroy_listener.link);
++	reset_listener(&panel->output_destroy_listener);
++	wl_list_remove(&panel->link);
++	panel->surface->committed = NULL;
++	panel->surface->committed_private = NULL;
++	weston_surface_set_label_func(panel->surface, NULL);
++	weston_view_destroy(panel->view);
++	free(panel);
++}
++
++static void
++panel_surface_destroyed(struct wl_listener *listener, void *data)
++{
++	struct input_panel_surface *panel = container_of(listener,
++			struct input_panel_surface, surface_destroy_listener);
++	(void)data;
++	wl_resource_destroy(panel->resource);
+ }
+ 
+ static void
+@@ -139,37 +304,30 @@
+ 				 struct wl_resource *output_resource,
+ 				 uint32_t position)
+ {
++	struct input_panel_surface *panel = wl_resource_get_user_data(resource);
++	(void)client;
++	(void)output_resource;
++	(void)position;
++	panel->configured = true;
++	panel->overlay = false;
++	position_panel(panel);
+ }
+ 
+ static void
+ input_panel_surface_set_overlay_panel(struct wl_client *client,
+ 				      struct wl_resource *resource)
+ {
+-}
+-
+-static const struct zwp_input_panel_surface_v1_interface input_panel_surface_implementation = {
++	struct input_panel_surface *panel = wl_resource_get_user_data(resource);
++	(void)client;
++	panel->configured = true;
++	panel->overlay = true;
++	position_panel(panel);
++}
++
++static const struct zwp_input_panel_surface_v1_interface panel_implementation = {
+ 	input_panel_surface_set_toplevel,
+ 	input_panel_surface_set_overlay_panel
+ };
+-
+-static struct input_panel_surface *
+-get_input_panel_surface(struct weston_surface *surface)
+-{
+-	if (surface->committed == input_panel_committed) {
+-		return surface->committed_private;
+-	} else {
+-		return NULL;
+-	}
+-}
+-
+-static void
+-destroy_input_panel_surface_resource(struct wl_resource *resource)
+-{
+-	struct input_panel_surface *ipsurf =
+-		wl_resource_get_user_data(resource);
+-
+-	destroy_input_panel_surface(ipsurf);
+-}
+ 
+ static void
+ input_panel_get_input_panel_surface(struct wl_client *client,
+@@ -177,35 +335,50 @@
+ 				    uint32_t id,
+ 				    struct wl_resource *surface_resource)
+ {
+-	struct weston_surface *surface =
+-		wl_resource_get_user_data(surface_resource);
++	struct weston_surface *surface = wl_resource_get_user_data(surface_resource);
+ 	struct desktop_shell *shell = wl_resource_get_user_data(resource);
+-	struct input_panel_surface *ipsurf;
+-
+-	if (get_input_panel_surface(surface)) {
+-		wl_resource_post_error(surface_resource,
+-				       WL_DISPLAY_ERROR_INVALID_OBJECT,
+-				       "wl_input_panel::get_input_panel_surface already requested");
+-		return;
+-	}
+-
+-	ipsurf = create_input_panel_surface(shell, surface);
+-	if (!ipsurf) {
+-		wl_resource_post_error(surface_resource,
+-				       WL_DISPLAY_ERROR_INVALID_OBJECT,
+-				       "surface->committed already set");
+-		return;
+-	}
+-
+-	ipsurf->resource =
+-		wl_resource_create(client,
+-				   &zwp_input_panel_surface_v1_interface,
+-				   1,
+-				   id);
+-	wl_resource_set_implementation(ipsurf->resource,
+-				       &input_panel_surface_implementation,
+-				       ipsurf,
+-				       destroy_input_panel_surface_resource);
++	struct input_panel_surface *panel;
++	if (surface->committed || surface->role_name) {
++		wl_resource_post_error(resource, WL_DISPLAY_ERROR_INVALID_OBJECT,
++				       "input panel surface already has a role");
++		return;
++	}
++	panel = calloc(1, sizeof *panel);
++	if (!panel) {
++		wl_client_post_no_memory(client);
++		return;
++	}
++	panel->view = weston_view_create(surface);
++	panel->resource = wl_resource_create(client,
++			&zwp_input_panel_surface_v1_interface, 1, id);
++	if (!panel->view || !panel->resource) {
++		if (panel->view)
++			weston_view_destroy(panel->view);
++		if (panel->resource)
++			wl_resource_destroy(panel->resource);
++		free(panel);
++		wl_client_post_no_memory(client);
++		return;
++	}
++	if (weston_surface_set_role(surface, WESTON_RDPRAIL_INPUT_PANEL_ROLE,
++				    resource, WL_DISPLAY_ERROR_INVALID_OBJECT) < 0) {
++		weston_view_destroy(panel->view);
++		wl_resource_destroy(panel->resource);
++		free(panel);
++		return;
++	}
++	panel->shell = shell;
++	panel->surface = surface;
++	wl_list_init(&panel->output_destroy_listener.link);
++	panel->output_destroy_listener.notify = panel_output_destroyed;
++	panel->surface_destroy_listener.notify = panel_surface_destroyed;
++	wl_signal_add(&surface->destroy_signal, &panel->surface_destroy_listener);
++	wl_list_insert(&shell->input_panel.surfaces, &panel->link);
++	surface->committed = input_panel_committed;
++	surface->committed_private = panel;
++	weston_surface_set_label_func(surface, input_panel_get_label);
++	wl_resource_set_implementation(panel->resource, &panel_implementation,
++				       panel, destroy_input_panel_surface_resource);
+ }
+ 
+ static const struct zwp_input_panel_v1_interface input_panel_implementation = {
+@@ -216,52 +389,82 @@
+ unbind_input_panel(struct wl_resource *resource)
+ {
+ 	struct desktop_shell *shell = wl_resource_get_user_data(resource);
+-
+-	shell->input_panel.binding = NULL;
+-}
+-
+-static void
+-bind_input_panel(struct wl_client *client,
+-	      void *data, uint32_t version, uint32_t id)
++	if (shell->input_panel.binding == resource)
++		shell->input_panel.binding = NULL;
++}
++
++static void
++bind_input_panel(struct wl_client *client, void *data,
++		 uint32_t version, uint32_t id)
+ {
+ 	struct desktop_shell *shell = data;
+-	struct wl_resource *resource;
+-
+-	resource = wl_resource_create(client,
+-				      &zwp_input_panel_v1_interface, 1, id);
+-
+-	if (shell->input_panel.binding == NULL) {
+-		wl_resource_set_implementation(resource,
+-					       &input_panel_implementation,
+-					       shell, unbind_input_panel);
+-		shell->input_panel.binding = resource;
+-		return;
+-	}
+-
+-	wl_resource_post_error(resource, WL_DISPLAY_ERROR_INVALID_OBJECT,
+-			       "interface object already bound");
++	struct wl_resource *resource = wl_resource_create(client,
++			&zwp_input_panel_v1_interface, 1, id);
++	(void)version;
++	if (!resource) {
++		wl_client_post_no_memory(client);
++		return;
++	}
++	if (shell->input_panel.binding) {
++		wl_resource_post_error(resource, WL_DISPLAY_ERROR_INVALID_OBJECT,
++				       "input panel interface already bound");
++		return;
++	}
++	wl_resource_set_implementation(resource, &input_panel_implementation,
++				       shell, unbind_input_panel);
++	shell->input_panel.binding = resource;
+ }
+ 
+ void
+ input_panel_destroy(struct desktop_shell *shell)
+ {
+-	wl_list_remove(&shell->show_input_panel_listener.link);
++	struct input_panel_surface *panel, *next;
++	if (!shell->input_panel.global)
++		return;
++	shell->input_panel.shutting_down = true;
++	wl_global_destroy(shell->input_panel.global);
++	shell->input_panel.global = NULL;
++	wl_list_for_each_safe(panel, next, &shell->input_panel.surfaces, link)
++		wl_resource_destroy(panel->resource);
++	if (shell->input_panel.binding)
++		wl_resource_destroy(shell->input_panel.binding);
++	reset_listener(&shell->show_input_panel_listener);
++	reset_listener(&shell->hide_input_panel_listener);
++	reset_listener(&shell->update_input_panel_listener);
++	reset_listener(&shell->input_panel.parent_destroy_listener);
++	reset_listener(&shell->input_panel.parent_commit_listener);
++	reset_listener(&shell->input_panel.parent_transform_listener);
++	weston_layer_unset_position(&shell->input_panel.layer);
+ }
+ 
+ int
+ input_panel_setup(struct desktop_shell *shell)
+ {
+ 	struct weston_compositor *ec = shell->compositor;
+-
++	shell->input_panel.rail_api = weston_plugin_api_get(ec,
++		WESTON_RDPRAIL_INPUT_PANEL_API_NAME,
++		sizeof(struct weston_rdprail_input_panel_api));
++	if (!shell->input_panel.rail_api) {
++		weston_log("RDPRAIL input panel: matching backend API missing\n");
++		return -1;
++	}
++	wl_list_init(&shell->input_panel.surfaces);
++	wl_list_init(&shell->input_panel.parent_destroy_listener.link);
++	wl_list_init(&shell->input_panel.parent_commit_listener.link);
++	shell->input_panel.parent_destroy_listener.notify = parent_destroyed;
++	shell->input_panel.parent_commit_listener.notify = parent_committed;
++	shell->input_panel.parent_transform_listener.notify = parent_transformed;
++	wl_signal_add(&ec->transform_signal,
++		      &shell->input_panel.parent_transform_listener);
++	weston_layer_init(&shell->input_panel.layer, ec);
++	weston_layer_set_position(&shell->input_panel.layer, WESTON_LAYER_POSITION_TOP_UI);
+ 	shell->show_input_panel_listener.notify = show_input_panels;
+-	wl_signal_add(&ec->show_input_panel_signal,
+-		      &shell->show_input_panel_listener);
+-
+-	if (wl_global_create(shell->compositor->wl_display,
+-			     &zwp_input_panel_v1_interface, 1,
+-			     shell, bind_input_panel) == NULL)
+-		return -1;
+-
+-	return 0;
+-}
+-
++	wl_signal_add(&ec->show_input_panel_signal, &shell->show_input_panel_listener);
++	shell->hide_input_panel_listener.notify = hide_input_panels;
++	wl_signal_add(&ec->hide_input_panel_signal, &shell->hide_input_panel_listener);
++	shell->update_input_panel_listener.notify = update_input_panels;
++	wl_signal_add(&ec->update_input_panel_signal, &shell->update_input_panel_listener);
++	shell->input_panel.global = wl_global_create(ec->wl_display,
++		&zwp_input_panel_v1_interface, 1, shell, bind_input_panel);
++	return shell->input_panel.global ? 0 : -1;
++}

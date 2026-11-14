@@ -1,5 +1,8 @@
 # Build and regression notes
 
+The original minimize-only steps below remain the prerequisite baseline.
+Native-IME additions are described at the end and in [IME.md](IME.md).
+
 ## Pinned inputs
 
 The patches target Microsoft Weston commit:
@@ -89,3 +92,44 @@ The PowerShell scripts operate on the current Windows user's `.wslgconfig` and m
 The stock rollback restores the entire saved pre-experiment `.wslgconfig`. Merge any later unrelated configuration changes before using it. Rollback selects the currently installed stock WSLg components; it does not downgrade WSL.
 
 The generated shell contains a local absolute desktop-library dependency. Moving the repository requires regenerating the shell copy and updating module mappings. Do not distribute that machine-bound artifact as a general binary release.
+
+## Native-IME build extension
+
+Use a fresh copy of the pinned source, with all three patches applied in order.
+If working from a Windows-extracted CRLF tree, normalize C/header files to LF
+only in this new copy before applying the patches; preserve original inputs
+and account for normalization separately from functional changes.
+
+The candidate builder additionally requires a private SDK directory containing
+`system-shell-sdk.tar`, exported from the actual target system distro with its
+`usr/lib` layout. It must include the matching libexec frontend and the shell's
+GLib/WinPR/librsvg/PNG/JPEG/WebP dependencies. Local development headers and
+`pkg-config` packages are also required. No SDK is bundled or auto-downloaded.
+
+The accepted minimize-patched desktop library must be present at
+`runtime/wslg-1.0.79-weston-a7e35fd-production/libweston-desktop-9.so.0`.
+This is a local prerequisite, not a committed file.
+
+```bash
+python3 tools/ime/build_candidate.py \
+  --source /absolute/fresh/all-three-patches-source \
+  --output runtime/wslg-1.0.79-ime-candidate-20261114-b \
+  --extra-sdk /absolute/private/system-shell-sdk-directory
+python3 -m unittest discover -s tests -p test_ime_production.py -v
+WSLG_IME_RELAY_BIN="$PWD/runtime/wslg-1.0.79-ime-candidate-20261114-b/trusted-socket-relay" \
+  python3 -m unittest discover -s tests -p test_ime_trusted_socket.py -v
+```
+
+Outputs must be new. The builder uses `-O2 -g`, retains local separate debug
+files, and emits stripped runtime artifacts. Before deployment, check real
+system-distro loading, preserve existing module mappings and private backups,
+and verify original-application GPU/Wayland and physical input separately.
+
+`activate_candidate.ps1 -RestartWsl` is a first-install developer tool for the
+recorded old Fcitx startup block. It refuses existing user units or unexpected
+configuration. After acceptance, `activate_production.ps1` upgrades from its
+private manifest and relocates the shell dependency into one fresh production
+runtime. See [promotion and rollback](IME_PRODUCTION.md).
+
+The isolated protocol fixture and mock RAIL tests in `tools/ime/` must never
+replace the live WSLg shell or be counted as real application GPU/GUI tests.

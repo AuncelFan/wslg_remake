@@ -1,5 +1,9 @@
 # Local production configuration
 
+Historical minimize-only deployment, recorded on 2026-11-12. The current
+native-IME deployment also rebuilds the RAIL shell and runs the trusted Fcitx
+bridge; see [current production settings](IME_PRODUCTION.md).
+
 The accepted patch combination was moved from verbose diagnostics to a normal-use local deployment on 2026-11-12. The public repository remains source only. This is a custom Weston deployment for a pinned WSLg version, not an official Microsoft or upstream Weston binary release.
 
 ## Binary classification
