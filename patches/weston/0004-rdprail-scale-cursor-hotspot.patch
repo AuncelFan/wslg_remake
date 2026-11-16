@@ -1,0 +1,106 @@
+From: wslg_remake contributors
+Subject: [PATCH 4/4] rdprail: keep cursor bitmap and hotspot in client pixel coordinates
+
+Pinned Weston a7e35fdab455dce5774b43b8aff682f748307e31, after patches 1-3.
+Do not multiply buffer_scale twice. Scale surface-local hotspots to the sent
+bitmap and resend when only the hotspot changes. No input coordinate offsets.
+
+--- a/libweston/backend-rdp/rdp.h
++++ b/libweston/backend-rdp/rdp.h
+@@ -252,6 +252,7 @@
+ 	struct wl_client *clientExec;
+ 	struct wl_listener clientExec_destroy_listener;
+ 	struct weston_surface *cursorSurface;
++	uint32_t cursor_hotspot_x, cursor_hotspot_y;
+ 
+ 	// list of outstanding event_source sent from FreeRDP thread to display loop.
+ 	int loop_task_event_source_fd;
+--- a/libweston/backend-rdp/rdprail.c
++++ b/libweston/backend-rdp/rdprail.c
+@@ -1436,6 +1436,25 @@
+ 	return 0;
+ }
+ 
++/* Wayland hotspots are surface-local; RDP hotspots index the sent bitmap. */
++static uint32_t
++rdp_rail_cursor_hotspot(int32_t hotspot, int32_t surface_size,
++                        uint32_t bitmap_size)
++{
++	int64_t scaled;
++
++	if (surface_size <= 0 || bitmap_size == 0 || hotspot <= 0)
++		return 0;
++
++	/* Round once, using the actual (possibly rounded) client bitmap size. */
++	scaled = ((int64_t)hotspot * bitmap_size + surface_size / 2) /
++		 surface_size;
++	if (scaled >= bitmap_size)
++		return bitmap_size - 1;
++
++	return scaled;
++}
++
+ static int
+ rdp_rail_update_cursor(struct weston_surface *surface)
+ {
+@@ -1452,6 +1471,7 @@
+ 	struct weston_rdp_rail_window_pos newClientPos = {.x = 0, .y = 0, .width = surface->width, .height = surface->height};
+ 	int content_buffer_width;
+ 	int content_buffer_height;
++	uint32_t hotspot_x, hotspot_y;
+ 
+ 	assert_compositor_thread(b);
+ 	assert(rail_state);
+@@ -1459,13 +1479,19 @@
+ 	weston_surface_get_content_size(surface,
+ 					&content_buffer_width,
+ 					&content_buffer_height);
+-	newClientPos.width = content_buffer_width;
+-	newClientPos.height = content_buffer_height;
++	/* Size in surface coordinates: the renderer already reports buffer_scale
++	 * in content_buffer_*. Multiplying those pixels by output scale again
++	 * double-scales HiDPI cursor buffers. */
+ 	if (surface->output)
+ 		to_client_coordinate(peer_ctx, surface->output,
+ 				     &newClientPos.x, &newClientPos.y, /* these are zero since position at client side doesn't matter */
+ 				     &newClientPos.width,
+ 				     &newClientPos.height);
++
++	hotspot_x = rdp_rail_cursor_hotspot(pointer ? pointer->hotspot_x : 0,
++					   surface->width, newClientPos.width);
++	hotspot_y = rdp_rail_cursor_hotspot(pointer ? pointer->hotspot_y : 0,
++					   surface->height, newClientPos.height);
+ 
+ 	if (newPos.x < 0 || newPos.y < 0 || /* check if negative in weston space */
+ 	    newClientPos.width <= 0 || newClientPos.height <= 0) {
+@@ -1475,7 +1501,9 @@
+ 		   rail_state->clientPos.height != newClientPos.height) {
+ 		isCursorResized = TRUE;
+ 		rdp_debug_verbose(b, "CursorUpdate: resized\n");
+-	} else if (pixman_region32_not_empty(&rail_state->damage)) {
++	} else if (pixman_region32_not_empty(&rail_state->damage) ||
++		   peer_ctx->cursor_hotspot_x != hotspot_x ||
++		   peer_ctx->cursor_hotspot_y != hotspot_y) {
+ 		isCursorDamanged = TRUE;
+ 		rdp_debug_verbose(b, "CursorUpdate: dirty\n");
+ 	}
+@@ -1516,8 +1544,8 @@
+ 
+ 		pointerUpdate.xorBpp = cursorBpp * 8; /* Bits Per Pixel. */
+ 		pointerUpdate.cacheIndex = 0;
+-		pointerUpdate.hotSpotX = pointer ? pointer->hotspot_x : 0;
+-		pointerUpdate.hotSpotY = pointer ? pointer->hotspot_y : 0;
++		pointerUpdate.hotSpotX = hotspot_x;
++		pointerUpdate.hotSpotY = hotspot_y;
+ 		pointerUpdate.width = newClientPos.width;
+ 		pointerUpdate.height = newClientPos.height;
+ 		pointerUpdate.lengthAndMask = 0;
+@@ -1529,6 +1557,8 @@
+ 		update->BeginPaint(update->context);
+ 		update->pointer->PointerLarge(update->context, &pointerUpdate);
+ 		update->EndPaint(update->context);
++		peer_ctx->cursor_hotspot_x = hotspot_x;
++		peer_ctx->cursor_hotspot_y = hotspot_y;
+ 
+ 		free(pointerBits);
+ 	}

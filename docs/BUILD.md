@@ -133,3 +133,30 @@ runtime. See [promotion and rollback](IME_PRODUCTION.md).
 
 The isolated protocol fixture and mock RAIL tests in `tools/ime/` must never
 replace the live WSLg shell or be counted as real application GPU/GUI tests.
+
+## Cursor alignment extension
+
+Apply patch 0004 after patches 0001-0003 to a fresh pinned source tree. Historical
+patch 0001 contains mixed line endings: normalize both temporary source files
+and temporary patch copies to LF before applying the complete series, and use
+`patch --fuzz=0`. Keep the original archive and accepted patch inputs unchanged.
+The [pointer record](POINTER_ALIGNMENT.md) explains the reproduced failure,
+measured results, scope and deployment map.
+
+```bash
+WESTON_CURSOR_SOURCE=/absolute/fresh/all-four-patches-source \
+  python3 -m unittest discover -s tests -p test_weston_cursor.py -v
+```
+
+The test extracts the actual cursor update function and executes eight geometry
+and update scenarios. It is separate from the native Wayland/D3D12 integration
+probe, whose build and physical cross-output test procedure are included in the
+pointer record. Compile the probe in a scratch directory; generated protocol
+files and test binaries are local artifacts.
+
+The existing `tools/ime/build_candidate.py` accepts the all-four-patches source
+and matching SDK. Use a fresh output directory. For this backend-only change,
+retain the accepted IME shell, its desktop library and helper rather than mapping
+newly built unused components. Check the actual system-distro loader and live
+Weston mappings before accepting the changed backend. Rebuilds, deployment and
+WSL restarts are explicit local operations, not effects of applying the patch.

@@ -7,6 +7,12 @@ modules, not official Microsoft/Weston releases. The repository is source only.
 [WaylandIM modifier backport](../tools/ime/fcitx-waylandim/README.md) for Ctrl
 shortcuts. It does not change these Weston binaries or the application wrapper.
 
+2026-11-16 pointer follow-up: the local deployment now uses a separately built
+RDP backend with [cursor bitmap/hotspot scaling fixed](POINTER_ALIGNMENT.md).
+The accepted IME shell, desktop library, relay, Fcitx addon and wrapper are
+retained. That deployment replaces only the backend path in the map below;
+consult the pointer record for the current mixed-runtime configuration.
+
 ## Settings changed for normal use
 
 | Location | Production change |

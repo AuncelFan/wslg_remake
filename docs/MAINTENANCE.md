@@ -2,6 +2,11 @@
 
 The accepted baseline targets WSL 3.0.5.0 / WSLg 1.0.79, Weston 9.0.0 commit `a7e35fdab455dce5774b43b8aff682f748307e31`, and FreeRDP commit `c4030980b29322a9cb2190711a5fadeeeb8b6a33`. The minimize patches modify four files (+83 / -3); the native-IME patch modifies another five-file set (+557 / -171), with eight distinct source files overall. See [IME implementation](IME.md) and [current production configuration](IME_PRODUCTION.md).
 
+The 2026-11-16 [cursor alignment extension](POINTER_ALIGNMENT.md) adds patch 0004
+(+36 / -5) in two existing backend files; the distinct source-file count remains
+eight. It changes only the RDP backend in the current local deployment. Preserve
+the accepted IME shell/desktop combination and the separate Fcitx shortcut addon.
+
 ## Keep a private local baseline
 
 Record the following locally before deployment and after a successful upgrade:
@@ -44,6 +49,16 @@ Successful `git apply --check` only establishes textual applicability. Matching 
 Use the original application without injection or keepalive changes. Move the pointer onto the application's own minimize button, hover about 800 ms, click, then restore by physically clicking the taskbar (or the tray icon if that is the application's current behavior). Record which restoration path was used; do not merge different paths into one trial count. Verify content scrolling/input without dragging, resizing or maximizing as a recovery aid.
 
 Test normal and maximized windows, longer hover, and short/long hidden intervals. Test other reachable application minimize entry points separately. Windows minimize shortcuts exercise a distinct path and are not a replacement for application-button tests.
+
+## Pointer regression after updates
+
+Review `rdp_rail_update_cursor()` against upstream changes to surface size,
+buffer scale, client scale and RDP hotspot units. Recheck hotspot-only updates
+and the RDP bitmap boundary rules. Run the function-level cursor harness and
+repeat physical calibration on each output with cursor buffer scales 1 and 2.
+Use the client's real Wayland move operation for cross-output checks: forcing
+only the Windows HWND position can leave Weston input geometry unsynchronized.
+Keep native Wayland and an observed D3D12 renderer in the acceptance path.
 
 ## Binary distribution note
 

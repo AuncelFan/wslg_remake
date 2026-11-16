@@ -8,18 +8,24 @@ Weston patches that fix the reproduced **WSLg application freeze after minimizin
 
 2026-11-16：新增 Fcitx5 5.1.7 原生 Wayland 快捷键修复，补齐输入法转发的 Ctrl/Shift 等修饰键状态。此项单独回补 Fcitx WaylandIM 模块，不增加 Weston 改动，目标应用保持原版。附带限定版本的构建配置、服务级加载守卫及回退说明。详见 [快捷键诊断](docs/shortcut-diagnosis-20261116.md) 与 [构建/部署说明](tools/ime/fcitx-waylandim/README.md)。
 
+2026-11-16: fixed HiDPI cursor bitmap/hotspot scaling and double-scaled cursor
+buffers in the RDP backend. Patch 0004 passed 36 physical calibration clicks
+across two outputs and two cursor buffer scales using native Wayland + D3D12.
+See the [pointer alignment record](docs/POINTER_ALIGNMENT.md).
+
 ## What changed
 
 The two minimize patches modify four Weston source files: **83 added lines
 and 3 deleted lines**, including comments. The additional IME patch modifies
-five files (+557 / -171); there are eight distinct source files across all
-three patches.
+five files (+557 / -171). The cursor patch modifies two existing backend
+files (+36 / -5); there are eight distinct source files across all four patches.
 
 | Patch | Purpose | Changes |
 | --- | --- | --- |
 | [0001](patches/weston/0001-rdp-resume-deferred-repaint-on-ack.patch) | Resume deferred RAIL repaint when a frame/buffer ACK releases backpressure | 3 files, +77 / −1 |
 | [0002](patches/weston/0002-xdg-shell-compare-last-acked-state.patch) | Compare pending xdg-shell state with the last acknowledged configuration instead of stale committed state | 1 file, +6 / −2 |
 | [0003](patches/weston/0003-rdprail-native-input-panels.patch) | Map native input panels as owned, non-activating RAIL popups and manage their lifecycle | 5 files, +557 / −171 |
+| [0004](patches/weston/0004-rdprail-scale-cursor-hotspot.patch) | Scale cursor bitmaps and hotspots consistently, avoid applying buffer scale twice, and send hotspot-only updates | 2 files, +36 / -5 |
 
 The separate [Fcitx5 patch](patches/fcitx5/0001-waylandim-v1-forward-modifiers.patch)
 adds one `modifiers()` request to the 5.1.7 WaylandIM frontend (+2 lines,
@@ -52,6 +58,9 @@ The current combination uses rebuilt `rdp-backend.so`,
 The IME build reuses the accepted minimize-patched desktop library.
 `WESTON_MODULE_MAP` selects the replacement backend and shell. The production
 shell dependency points to the desktop library in the same new runtime.
+The pointer follow-up replaces only the backend in a separate immutable
+runtime; the accepted IME shell and its desktop-library dependency remain
+together. See the [pointer deployment record](docs/POINTER_ALIGNMENT.md).
 
 On the tested Ubuntu Fcitx 5.1.7 configuration, the shortcut fix additionally
 loads a user-local `libwaylandim.so` through a `wslg-ime.service` drop-in.
