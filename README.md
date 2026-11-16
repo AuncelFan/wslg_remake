@@ -6,6 +6,8 @@ Weston patches that fix the reproduced **WSLg application freeze after minimizin
 
 2026-11-14：新增原生 Wayland 中文输入支持。保留原版应用，通过受信任的 Fcitx 连接和 Weston/RAIL 候选窗实现，用户已反馈当前方案成功。已转为低日志生产配置；公开仓库继续仅含源码，不含本机二进制、日志和用户数据。详见 [输入法实现](docs/IME.md) 与 [当前生产配置](docs/IME_PRODUCTION.md)。
 
+2026-11-16：新增 Fcitx5 5.1.7 原生 Wayland 快捷键修复，补齐输入法转发的 Ctrl/Shift 等修饰键状态。此项单独回补 Fcitx WaylandIM 模块，不增加 Weston 改动，目标应用保持原版。附带限定版本的构建配置、服务级加载守卫及回退说明。详见 [快捷键诊断](docs/shortcut-diagnosis-20261116.md) 与 [构建/部署说明](tools/ime/fcitx-waylandim/README.md)。
+
 ## What changed
 
 The two minimize patches modify four Weston source files: **83 added lines
@@ -18,6 +20,11 @@ three patches.
 | [0001](patches/weston/0001-rdp-resume-deferred-repaint-on-ack.patch) | Resume deferred RAIL repaint when a frame/buffer ACK releases backpressure | 3 files, +77 / −1 |
 | [0002](patches/weston/0002-xdg-shell-compare-last-acked-state.patch) | Compare pending xdg-shell state with the last acknowledged configuration instead of stale committed state | 1 file, +6 / −2 |
 | [0003](patches/weston/0003-rdprail-native-input-panels.patch) | Map native input panels as owned, non-activating RAIL popups and manage their lifecycle | 5 files, +557 / −171 |
+
+The separate [Fcitx5 patch](patches/fcitx5/0001-waylandim-v1-forward-modifiers.patch)
+adds one `modifiers()` request to the 5.1.7 WaylandIM frontend (+2 lines,
+including a blank line). Its scoped build and session guard are additional
+integration tools. No extra Weston source changes are needed for this fix.
 
 The second patch addresses the reproduced minimize/restore failure: a bufferless commit can leave `current.activated` stale. Comparing against that stale state can suppress the activation configure required to restore the client. When the configure queue is empty, the patch compares against `next.state`, the last acknowledged state.
 
@@ -45,6 +52,12 @@ The current combination uses rebuilt `rdp-backend.so`,
 The IME build reuses the accepted minimize-patched desktop library.
 `WESTON_MODULE_MAP` selects the replacement backend and shell. The production
 shell dependency points to the desktop library in the same new runtime.
+
+On the tested Ubuntu Fcitx 5.1.7 configuration, the shortcut fix additionally
+loads a user-local `libwaylandim.so` through a `wslg-ime.service` drop-in.
+The launcher checks exact Fcitx package versions and the module checksum,
+falling back to system addons on mismatch. It does not replace package-owned
+Fcitx files or modify the target application.
 
 Installed system components are preserved. Before the IME extension, the
 minimize-only deployment used a stock shell copy with its dependency rewritten;

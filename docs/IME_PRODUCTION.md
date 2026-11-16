@@ -3,6 +3,10 @@
 Recorded on 2026-11-14 for WSLg 1.0.79. These are optimized, stripped custom
 modules, not official Microsoft/Weston releases. The repository is source only.
 
+2026-11-16 follow-up: Ubuntu Fcitx 5.1.7 needed a separate, service-scoped
+[WaylandIM modifier backport](../tools/ime/fcitx-waylandim/README.md) for Ctrl
+shortcuts. It does not change these Weston binaries or the application wrapper.
+
 ## Settings changed for normal use
 
 | Location | Production change |

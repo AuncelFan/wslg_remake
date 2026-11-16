@@ -12,6 +12,10 @@ The broker handles one trusted connection per process. The
 `session_supervisor.py` couples its lifetime to Fcitx; systemd restarts both
 after either exits, avoiding reuse of an old Wayland protocol stream.
 
+For Ubuntu Fcitx 5.1.7 losing Ctrl shortcuts on the native v1 input route,
+see the scoped [WaylandIM modifier backport](fcitx-waylandim/README.md).
+That addon fix is separate from the accepted Weston minimize/IME modules.
+
 The intended path is:
 
 ```text
