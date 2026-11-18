@@ -60,6 +60,17 @@ Use the client's real Wayland move operation for cross-output checks: forcing
 only the Windows HWND position can leave Weston input geometry unsynchronized.
 Keep native Wayland and an observed D3D12 renderer in the acceptance path.
 
+## GTK portal startup prerequisite
+
+The 2026-11-18 [GTK portal follow-up](PORTAL_SEAT_READY.md) adds a one-shot
+user-service prerequisite that waits for Wayland pointer/keyboard readiness.
+It does not modify the Weston modules. After GTK, portal or WSLg updates,
+review whether the late-seat initialization race still applies, inspect the
+backend's display environment, and rerun the eight private-socket protocol
+tests. Repeat a real cold start and the original application's complete
+mouse-based directory selection; test RDP reconnect separately. Keep the
+deployment receipt private for hash-checked rollback.
+
 ## Binary distribution note
 
 The original tested artifacts were approximately 0.86 MiB (backend), 0.35 MiB (desktop library), and 0.15 MiB (shell copy), or 1.36 MiB combined. Size is not the reason this draft excludes them.

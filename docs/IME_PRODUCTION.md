@@ -13,6 +13,12 @@ The accepted IME shell, desktop library, relay, Fcitx addon and wrapper are
 retained. That deployment replaces only the backend path in the map below;
 consult the pointer record for the current mixed-runtime configuration.
 
+2026-11-18 portal follow-up: a
+[one-shot seat-readiness prerequisite](PORTAL_SEAT_READY.md) now orders the
+existing GTK portal startup after Wayland input becomes available. It fixes
+the reproduced non-interactive directory chooser without changing the
+modules, Fcitx service, application wrapper or WSLg configuration below.
+
 ## Settings changed for normal use
 
 | Location | Production change |

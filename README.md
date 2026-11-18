@@ -20,6 +20,13 @@ re-send work areas through the existing RAIL channel. This addition needs no
 new Weston patch and preserves the original application. Only source is
 distributed; see [build, installation, startup, status and removal instructions](docs/WORKAREA_SYNC.md).
 
+2026-11-18: added a one-shot Wayland seat-readiness prerequisite for the
+existing Ubuntu GTK portal. This addresses the reproduced directory chooser
+that drew its window but ignored input after starting before the first seat
+was ready. Includes source, install/rollback tooling, eight isolated protocol
+tests and a real cold-start validation record. See the
+[diagnosis and deployment guide](docs/PORTAL_SEAT_READY.md).
+
 ## What changed
 
 The two minimize patches modify four Weston source files: **83 added lines
@@ -82,6 +89,12 @@ and leaves the existing Weston modules, WSLg configuration and application
 wrapper intact. Its bounds come from the current Windows monitor/work-area
 APIs, with no fixed taskbar height or primary-monitor dimensions. See the
 [work-area deployment instructions](docs/WORKAREA_SYNC.md).
+
+The GTK portal follow-up adds a user-service `ExecStartPre` that waits for
+one Wayland seat with both pointer and keyboard capabilities. It exits after
+readiness; no additional daemon, Windows service or Weston/Fcitx binary
+patch is involved. The original application and existing graphics settings
+are retained. See the [portal startup guide](docs/PORTAL_SEAT_READY.md).
 
 Installed system components are preserved. Before the IME extension, the
 minimize-only deployment used a stock shell copy with its dependency rewritten;
