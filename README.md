@@ -13,6 +13,13 @@ buffers in the RDP backend. Patch 0004 passed 36 physical calibration clicks
 across two outputs and two cursor buffer scales using native Wayland + D3D12.
 See the [pointer alignment record](docs/POINTER_ALIGNMENT.md).
 
+2026-11-18: added a Windows work-area synchronization helper for maximized
+Wayland windows whose contents were clipped by the taskbar. It dynamically
+observes monitor/work-area/DPI and WSLg connection changes, then asks MSRDC to
+re-send work areas through the existing RAIL channel. This addition needs no
+new Weston patch and preserves the original application. Only source is
+distributed; see [build, installation, startup, status and removal instructions](docs/WORKAREA_SYNC.md).
+
 ## What changed
 
 The two minimize patches modify four Weston source files: **83 added lines
@@ -67,6 +74,14 @@ loads a user-local `libwaylandim.so` through a `wslg-ime.service` drop-in.
 The launcher checks exact Fcitx package versions and the module checksum,
 falling back to system addons on mismatch. It does not replace package-owned
 Fcitx files or modify the target application.
+
+The work-area follow-up adds a hidden, per-user Windows helper and a Startup
+shortcut. It runs while automatic synchronization is desired; it is not a
+Windows system service. Installation compiles an optimized executable locally
+and leaves the existing Weston modules, WSLg configuration and application
+wrapper intact. Its bounds come from the current Windows monitor/work-area
+APIs, with no fixed taskbar height or primary-monitor dimensions. See the
+[work-area deployment instructions](docs/WORKAREA_SYNC.md).
 
 Installed system components are preserved. Before the IME extension, the
 minimize-only deployment used a stock shell copy with its dependency rewritten;
