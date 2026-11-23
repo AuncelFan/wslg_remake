@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import socket
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -130,6 +131,35 @@ class NativeRelayTest(unittest.TestCase):
         stdout, stderr = process.communicate(timeout=3)
         self.assertNotEqual(process.returncode, 0)
         self.assertIn(b"mode 0700", stderr)
+
+    def test_compositor_disconnect_ends_handoff_while_broker_is_alive(self):
+        fake_compositor = """
+import os, socket, subprocess, sys
+peer, wayland = socket.socketpair()
+env = dict(os.environ, WAYLAND_SOCKET=str(wayland.fileno()),
+           WSLG_IME_BRIDGE_SOCKET=sys.argv[2])
+subprocess.Popen([sys.argv[1]], env=env, pass_fds=[wayland.fileno()])
+sys.stdin.buffer.read(1)
+"""
+        with subprocess.Popen(
+            [sys.executable, "-c", fake_compositor, self.binary, str(self.path)],
+            stdin=subprocess.PIPE, stderr=subprocess.PIPE,
+        ) as compositor:
+            try:
+                with self.server.accept()[0] as accepted:
+                    accepted.settimeout(3)
+                    with socket.socket(fileno=BROKER.receive_wayland_fd(accepted)):
+                        accepted.sendall(b"O")
+                        compositor.stdin.write(b"x")
+                        compositor.stdin.flush()
+                        # The broker remains alive and doesn't close first.
+                        self.assertEqual(accepted.recv(1), b"")
+                        _, error = compositor.communicate(timeout=3)
+                        self.assertEqual(compositor.returncode, 0, error)
+                        self.assertIn(b"compositor exited", error)
+            finally:
+                if compositor.poll() is None:
+                    compositor.kill()
 
     def test_relay_refuses_nonprivate_socket(self):
         self.path.chmod(0o666)

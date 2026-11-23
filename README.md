@@ -27,12 +27,20 @@ was ready. Includes source, install/rollback tooling, eight isolated protocol
 tests and a real cold-start validation record. See the
 [diagnosis and deployment guide](docs/PORTAL_SEAT_READY.md).
 
+2026-11-23: fixed a Weston abort during overlapping Windows-to-WSL clipboard
+reads and added recovery for the trusted Wayland IME connection. The Ubuntu
+user service now waits for a real Fcitx input context before reporting ready.
+The ChatGPT launcher also retries a normal launch once when it encounters the
+reproduced single-instance shutdown race. See the
+[recovery and deployment guide](docs/SESSION_RECOVERY.md).
+
 ## What changed
 
 The two minimize patches modify four Weston source files: **83 added lines
 and 3 deleted lines**, including comments. The additional IME patch modifies
 five files (+557 / -171). The cursor patch modifies two existing backend
-files (+36 / -5); there are eight distinct source files across all four patches.
+files (+36 / -5). The clipboard patch adds one source file to the set
+(+3 / -7), for nine distinct source files across all five Weston patches.
 
 | Patch | Purpose | Changes |
 | --- | --- | --- |
@@ -40,6 +48,7 @@ files (+36 / -5); there are eight distinct source files across all four patches.
 | [0002](patches/weston/0002-xdg-shell-compare-last-acked-state.patch) | Compare pending xdg-shell state with the last acknowledged configuration instead of stale committed state | 1 file, +6 / −2 |
 | [0003](patches/weston/0003-rdprail-native-input-panels.patch) | Map native input panels as owned, non-activating RAIL popups and manage their lifecycle | 5 files, +557 / −171 |
 | [0004](patches/weston/0004-rdprail-scale-cursor-hotspot.patch) | Scale cursor bitmaps and hotspots consistently, avoid applying buffer scale twice, and send hotspot-only updates | 2 files, +36 / -5 |
+| [0005](patches/weston/0005-rdpclip-preserve-active-transfer-fd.patch) | Preserve the active RDP clipboard transfer descriptor when another read overlaps it | 1 file, +3 / -7 |
 
 The separate [Fcitx5 patch](patches/fcitx5/0001-waylandim-v1-forward-modifiers.patch)
 adds one `modifiers()` request to the 5.1.7 WaylandIM frontend (+2 lines,

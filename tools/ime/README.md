@@ -8,9 +8,13 @@ the local candidate and reversible launch settings. Current deployment and
 acceptance limits are in the
 [production record](../../docs/IME_PRODUCTION.md).
 
-The broker handles one trusted connection per process. The
-`session_supervisor.py` couples its lifetime to Fcitx; systemd restarts both
-after either exits, avoiding reuse of an old Wayland protocol stream.
+Each broker handles one trusted connection. The Weston relay monitors its
+parent with a Linux pidfd and sends a heartbeat over the existing broker
+socket. The supervisor reports ready after handoff and confirmation of a
+Fcitx Wayland input context. Systemd restarts the session after process
+failure, loss of the connection or a watchdog timeout. Install the matching
+relay, broker and supervisor together. See the
+[recovery guide](../../docs/SESSION_RECOVERY.md).
 
 For Ubuntu Fcitx 5.1.7 losing Ctrl shortcuts on the native v1 input route,
 see the scoped [WaylandIM modifier backport](fcitx-waylandim/README.md).

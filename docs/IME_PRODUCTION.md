@@ -19,6 +19,12 @@ existing GTK portal startup after Wayland input becomes available. It fixes
 the reproduced non-interactive directory chooser without changing the
 modules, Fcitx service, application wrapper or WSLg configuration below.
 
+2026-11-23 recovery follow-up: the new RDP backend includes patch 0005.
+The Weston relay and `wslg-ime.service` now verify and recover the trusted
+Wayland connection. The ChatGPT wrapper handles the reproduced quick-relaunch
+race. See the current paths, coordinated update steps and rollback procedure
+in the [recovery guide](SESSION_RECOVERY.md).
+
 ## Settings changed for normal use
 
 | Location | Production change |
@@ -100,11 +106,11 @@ The installer quotes the real runtime path and escapes systemd `%` specifiers:
 [Unit]
 Description=WSLg trusted native Wayland Fcitx session
 After=dbus.socket
-StartLimitIntervalSec=60
-StartLimitBurst=5
+StartLimitIntervalSec=0
 
 [Service]
-Type=simple
+Type=notify
+NotifyAccess=main
 Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=%t/bus
 Environment=XDG_RUNTIME_DIR=%t
 Environment=DISPLAY=:0
@@ -114,7 +120,9 @@ Environment=GALLIUM_DRIVER=d3d12
 UnsetEnvironment=WAYLAND_SOCKET WAYLAND_DEBUG LD_PRELOAD NODE_OPTIONS MESA_DEBUG MESA_LOG_FILE LIBGL_DEBUG
 ExecStart=/usr/bin/python3 "<RUNTIME>/ime/session_supervisor.py" --socket /mnt/wslg/runtime-dir/wslg-ime-v1/bridge.sock
 Restart=on-failure
-RestartSec=3
+RestartSec=5s
+TimeoutStartSec=55s
+WatchdogSec=25s
 KillMode=mixed
 TimeoutStopSec=12
 UMask=0077
@@ -123,6 +131,11 @@ SyslogIdentifier=wslg-ime
 [Install]
 WantedBy=default.target
 ```
+
+The supervisor reports readiness after the broker hands off Weston's
+trusted socket and Fcitx reports a native Wayland input context. Deploy the
+matching relay, broker and supervisor together. The supervisor checks relay
+heartbeats and Fcitx's Wayland group before feeding the systemd watchdog.
 
 `.zshenv` retains this idempotent trigger; the enabled unit also starts with
 the user manager:

@@ -13,8 +13,8 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <sys/un.h>
-#include <time.h>
 #include <unistd.h>
 
 static volatile sig_atomic_t stopping;
@@ -68,13 +68,22 @@ int main(void)
         st.st_uid != getuid() || (st.st_mode & 0777) != 0700)
         return fail("socket directory must be owned by this uid with mode 0700");
 
+    /* Weston creates the socketpair before forking this helper. Monitor
+     * its process without keeping a second copy of Fcitx's Wayland stream. */
+    if (getsockopt((int)wayland, SOL_SOCKET, SO_PEERCRED, &peer, &peer_len) ||
+        peer.pid <= 0 || peer.pid != getppid())
+        return fail("Wayland socket peer must be the compositor parent");
+    int compositor = syscall(SYS_pidfd_open, peer.pid, 0);
+    if (compositor < 0 || peer.pid != getppid())
+        return fail("cannot monitor the compositor process");
+    struct pollfd compositor_exit = {.fd = compositor, .events = POLLIN};
+
     sigemptyset(&action.sa_mask);
     sigaction(SIGTERM, &action, NULL);
     sigaction(SIGINT, &action, NULL);
     signal(SIGPIPE, SIG_IGN);
     /* The system compositor can start before the Ubuntu user manager. */
     for (int attempt = 0; attempt < 6000 && !stopping; ++attempt) {
-        struct timespec delay = {.tv_nsec = 100000000};
         if (!lstat(name, &st)) {
             if (!S_ISSOCK(st.st_mode) || st.st_uid != getuid() ||
                 (st.st_mode & 0777) != 0600)
@@ -87,7 +96,8 @@ int main(void)
             close(relay);
             relay = -1;
         }
-        nanosleep(&delay, NULL);
+        if (poll(&compositor_exit, 1, 100) > 0)
+            return fail("compositor exited before handoff");
     }
     if (relay < 0)
         return fail("broker unavailable after bounded startup wait");
@@ -117,9 +127,13 @@ int main(void)
         close(relay);
         return fail("descriptor transfer failed");
     }
-    struct pollfd ready = {.fd = relay, .events = POLLIN};
+    struct pollfd ready[] = {
+        {.fd = relay, .events = POLLIN},
+        {.fd = compositor, .events = POLLIN},
+    };
     char reply;
-    if (poll(&ready, 1, 10000) <= 0 || recv(relay, &reply, 1, 0) != 1 || reply != 'O') {
+    if (poll(ready, 2, 10000) <= 0 || ready[1].revents ||
+        recv(relay, &reply, 1, 0) != 1 || reply != 'O') {
         close(relay);
         return fail("broker did not confirm the Fcitx handoff");
     }
@@ -127,11 +141,19 @@ int main(void)
     unsetenv("WAYLAND_SOCKET");
     fprintf(stderr, "wslg-ime-relay: trusted descriptor handed off\n");
     while (!stopping) {
-        ssize_t received = recv(relay, &reply, 1, 0);
-        if (received < 0 && errno == EINTR)
+        int status = poll(ready, 2, 5000);
+        if (status == 0) {
+            if (send(relay, "P", 1, MSG_NOSIGNAL | MSG_DONTWAIT) != 1)
+                break;
             continue;
+        }
+        if (status < 0 && errno == EINTR)
+            continue;
+        if (ready[1].revents)
+            fprintf(stderr, "wslg-ime-relay: compositor exited\n");
         break;
     }
     close(relay);
+    close(compositor);
     return EXIT_SUCCESS;
 }

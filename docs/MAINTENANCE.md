@@ -71,6 +71,17 @@ tests. Repeat a real cold start and the original application's complete
 mouse-based directory selection; test RDP reconnect separately. Keep the
 deployment receipt private for hash-checked rollback.
 
+## Clipboard and session recovery
+
+For patch 0005, check whether the updated RDP clipboard code already
+preserves the active transfer descriptor during overlapping reads. Check
+the Weston input-helper launch and respawn path, and deploy the relay and
+Ubuntu IME scripts as a matching set. The Fcitx context check uses the
+5.1.7 `DebugInfo` format. Confirm that real input resumes after a controlled
+failure and after a full WSL start. Recheck the portal and the original
+application's immediate close-and-relaunch path. Follow the
+[recovery guide](SESSION_RECOVERY.md).
+
 ## Binary distribution note
 
 The original tested artifacts were approximately 0.86 MiB (backend), 0.35 MiB (desktop library), and 0.15 MiB (shell copy), or 1.36 MiB combined. Size is not the reason this draft excludes them.

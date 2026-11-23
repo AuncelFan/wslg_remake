@@ -119,11 +119,11 @@ def main():
     service = '''[Unit]
 Description=WSLg trusted native Wayland Fcitx session
 After=dbus.socket
-StartLimitIntervalSec=60
-StartLimitBurst=5
+StartLimitIntervalSec=0
 
 [Service]
-Type=simple
+Type=notify
+NotifyAccess=main
 Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=%t/bus
 Environment=XDG_RUNTIME_DIR=%t
 Environment=DISPLAY=:0
@@ -133,7 +133,9 @@ Environment=GALLIUM_DRIVER=d3d12
 UnsetEnvironment=WAYLAND_SOCKET WAYLAND_DEBUG LD_PRELOAD NODE_OPTIONS MESA_DEBUG MESA_LOG_FILE LIBGL_DEBUG
 ExecStart=/usr/bin/python3 '''+systemd_quote(snapshot/'session_supervisor.py')+''' --socket /mnt/wslg/runtime-dir/wslg-ime-v1/bridge.sock
 Restart=on-failure
-RestartSec=3
+RestartSec=5s
+TimeoutStartSec=55s
+WatchdogSec=25s
 KillMode=mixed
 TimeoutStopSec=12
 UMask=0077

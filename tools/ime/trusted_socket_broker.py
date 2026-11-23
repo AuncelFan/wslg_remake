@@ -70,7 +70,7 @@ def forward_to_fcitx(connection, fd: int) -> tuple[str, object]:
 
 
 def serve(path: Path, bus_address: str, wait_seconds: float,
-          recover_stale: bool = False) -> None:
+          recover_stale: bool = False, health_fd: int | None = None) -> None:
     from gi.repository import Gio, GLib
     if not path.is_absolute() or len(os.fsencode(path)) >= 108:
         raise ValueError("use a short absolute Unix socket path")
@@ -110,6 +110,10 @@ def serve(path: Path, bus_address: str, wait_seconds: float,
         listener.settimeout(wait_seconds)
         print(json.dumps({"event": "listening", "uid": os.getuid()}), flush=True)
         with listener.accept()[0] as client:
+            # Each broker owns one Wayland session. Refuse new connects while
+            # it is active so a replacement relay waits for the new broker
+            # instead of queuing behind a session nobody will accept again.
+            listener.close()
             if peer_uid(client) != os.getuid():
                 raise PermissionError("helper uid does not match broker uid")
             client.settimeout(10)
@@ -122,6 +126,8 @@ def serve(path: Path, bus_address: str, wait_seconds: float,
             client.setblocking(False)
             print(json.dumps({"event": "fcitx-handoff-confirmed"}), flush=True)
             loop = GLib.MainLoop()
+            if health_fd is not None:
+                os.write(health_fd, b"R")
 
             def owner_changed(_bus, _sender, _path, _interface, _signal, params):
                 _name, old, new = params.unpack()
@@ -129,6 +135,19 @@ def serve(path: Path, bus_address: str, wait_seconds: float,
                     loop.quit()
 
             def relay_changed(_fd, _condition):
+                if _condition & (GLib.IO_HUP | GLib.IO_ERR | GLib.IO_NVAL):
+                    loop.quit()
+                    return False
+                try:
+                    message = client.recv(2)
+                    if message == b"P":
+                        if health_fd is not None:
+                            os.write(health_fd, b"P")
+                        return True
+                except BlockingIOError:
+                    return True
+                except OSError:
+                    pass
                 loop.quit()
                 return False
 
@@ -177,6 +196,8 @@ def main():
     parser.add_argument("--socket", required=True, type=Path)
     parser.add_argument("--bus-address", default=os.environ.get("DBUS_SESSION_BUS_ADDRESS"))
     parser.add_argument("--wait-seconds", type=float, default=30)
+    parser.add_argument("--health-fd", type=int,
+                        help="private pipe for readiness and relay heartbeats")
     parser.add_argument("--recover-stale", action="store_true",
                         help="recover this private service socket under an exclusive lock")
     args = parser.parse_args()
@@ -184,7 +205,8 @@ def main():
         parser.error("a user session DBus address is required")
     if not 0 < args.wait_seconds <= 3600:
         parser.error("wait-seconds must be between 0 and 3600")
-    serve(args.socket, args.bus_address, args.wait_seconds, args.recover_stale)
+    serve(args.socket, args.bus_address, args.wait_seconds, args.recover_stale,
+          args.health_fd)
 
 
 if __name__ == "__main__":

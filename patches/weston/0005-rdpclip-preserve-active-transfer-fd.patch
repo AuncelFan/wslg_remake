@@ -1,0 +1,38 @@
+Subject: [PATCH] rdp-backend: preserve the active clipboard transfer fd
+
+Backport the fd ownership rule from microsoft/weston-mirror PR #166
+(implementation commit 0a83da0089df13d975a59e824166f1f8b29fe774).
+
+--- a/libweston/backend-rdp/rdpclip.c
++++ b/libweston/backend-rdp/rdpclip.c
+@@ -105,7 +105,6 @@
+ 	RDP_CLIPBOARD_SOURCE_TRANSFERRED, /* completed transfering data to consumer */
+ 	RDP_CLIPBOARD_SOURCE_CANCEL_PENDING, /* data transfer cancel requested */
+ 	RDP_CLIPBOARD_SOURCE_CANCELED, /* data transfer canceled */
+-	RDP_CLIPBOARD_SOURCE_RETRY, /* retry later */
+ 	RDP_CLIPBOARD_SOURCE_FAILED, /* failure occured */
+ };
+ 
+@@ -162,8 +161,6 @@
+ 		return "cancel pending";
+ 	case RDP_CLIPBOARD_SOURCE_CANCELED:
+ 		return "canceled";
+-	case RDP_CLIPBOARD_SOURCE_RETRY:
+-		return "retry";
+ 	case RDP_CLIPBOARD_SOURCE_FAILED:
+ 		return "failed";
+ 	}
+@@ -1108,10 +1105,9 @@
+ 			   clipboard_data_source_state_to_string(ctx->clipboard_inflight_client_data_source),
+ 			   ctx->clipboard_inflight_client_data_source->data_source_fd);
+ 		if (source == ctx->clipboard_inflight_client_data_source) {
+-			/* when new source and previous source is same, update fd with new one and retry */
+-			source->state = RDP_CLIPBOARD_SOURCE_RETRY;
+-			ctx->clipboard_inflight_client_data_source->data_source_fd = fd;
+-			return;
++			/* The active write event still owns its original fd. Reject
++			 * this overlapping request without disturbing the transfer. */
++			goto error_return_close_fd;
+ 		} else {
+ 			source->state = RDP_CLIPBOARD_SOURCE_FAILED;
+ 			goto error_return_close_fd;

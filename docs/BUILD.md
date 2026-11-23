@@ -154,9 +154,17 @@ probe, whose build and physical cross-output test procedure are included in the
 pointer record. Compile the probe in a scratch directory; generated protocol
 files and test binaries are local artifacts.
 
-The existing `tools/ime/build_candidate.py` accepts the all-four-patches source
+The existing `tools/ime/build_candidate.py` accepts the patched source
 and matching SDK. Use a fresh output directory. For this backend-only change,
 retain the accepted IME shell, its desktop library and helper rather than mapping
 newly built unused components. Check the actual system-distro loader and live
 Weston mappings before accepting the changed backend. Rebuilds, deployment and
 WSL restarts are explicit local operations, not effects of applying the patch.
+
+## Clipboard and session recovery extension
+
+Apply patch 0005 after patches 0001–0004 for the recovery build. Use the same
+pinned SDK with `tools/ime/build_candidate.py` and a fresh output directory to
+produce the new RDP backend and relay. For an existing deployment, follow
+the [recovery guide](SESSION_RECOVERY.md) to select these outputs and update
+the matching Ubuntu user-service scripts.
